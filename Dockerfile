@@ -1,39 +1,35 @@
-# Use Node.js 18 Alpine for smaller image size
-FROM node:18-alpine
-
-# Set working directory
+# Build stage: compile TypeScript and install production deps
+FROM node:22-alpine AS builder
 WORKDIR /app
 
-# Install system dependencies for tree-sitter
-RUN apk add --no-cache \
-    python3 \
-    make \
-    g++ \
-    git
+RUN apk add --no-cache python3 make g++ git
 
-# Copy package files
 COPY package*.json ./
+RUN npm ci
 
-# Install dependencies
-RUN npm ci --only=production
-
-# Copy application code
 COPY . .
+RUN npm run build && npm prune --omit=dev
 
-# Create non-root user for security
-RUN addgroup -g 1001 -S nodejs
-RUN adduser -S specsync -u 1001
+# Runtime: non-root, production dependencies only
+FROM node:22-alpine AS runner
+WORKDIR /app
 
-# Change ownership of the app directory
-RUN chown -R specsync:nodejs /app
+ENV NODE_ENV=production
+
+RUN apk add --no-cache python3 make g++ git
+
+COPY --from=builder /app/package*.json ./
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/dist ./dist
+
+RUN addgroup -g 1001 -S nodejs \
+  && adduser -S specsync -u 1001 \
+  && chown -R specsync:nodejs /app
 USER specsync
 
-# Expose port
 EXPOSE 3000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-    CMD node -e "require('http').get('http://localhost:3000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
+  CMD node -e "require('http').get('http://127.0.0.1:3000/health', (r) => { process.exit(r.statusCode === 200 ? 0 : 1); }).on('error', () => process.exit(1))"
 
-# Start the application
-CMD ["npm", "start"] 
+CMD ["node", "dist/index.js"]

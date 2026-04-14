@@ -1,0 +1,13 @@
+{
+  "action": "opened",
+  "repository": {
+    "name": "demo-repo",
+    "full_name": "acme/demo-repo",
+    "owner": { "login": "acme" }
+  },
+  "pull_request": {
+    "number": 42,
+    "html_url": "https://github.com/acme/demo-repo/pull/42",
+    "head": { "sha": "deadbeef" }
+  }
+}

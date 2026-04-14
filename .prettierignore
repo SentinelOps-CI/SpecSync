@@ -1,0 +1,6 @@
+node_modules
+dist
+coverage
+.lake
+package-lock.json
+vscode-extension

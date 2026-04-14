@@ -1,3 +1,7 @@
+# GitHub App manifest template (see https://docs.github.com/en/apps/creating-github-apps)
+# Register or update your app in GitHub settings; align webhook URL with your Probot deployment.
+# Full setup: README.md "GitHub App manifest (reference)" and https://probot.github.io/
+
 name: SpecSync
 description: A GitHub-native, frictionless specification system
 url: https://github.com/your-org/specsync
@@ -15,4 +19,4 @@ default_events:
   - issues
   - issue_comment
   - pull_request_review
-  - pull_request_review_comment 
+  - pull_request_review_comment

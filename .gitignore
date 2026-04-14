@@ -1,3 +1,6 @@
+# Lean / Lake build cache
+.lake/
+
 # Dependencies
 node_modules/
 npm-debug.log*
@@ -99,6 +102,7 @@ Thumbs.db
 # Build outputs
 dist/
 build/
+lib/
 
 # Test outputs
 test-results/ 

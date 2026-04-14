@@ -1,76 +1,139 @@
+<div align="center">
+
 # SpecSync
 
-A formal specification system that automatically analyzes code changes and generates comprehensive formal specifications using advanced LLM techniques and Lean4 theorem proving.
+**Formal specs, meet your pull requests.**
 
-## Overview
+A GitHub App that turns diffs into structured specification suggestions—powered by LLMs, grounded in AST analysis, and wired for Lean 4 when you want proofs to compile.
 
-SpecSync is a GitHub App that provides end-to-end formal verification capabilities from GitHub integration to developer feedback loops, featuring advanced security analysis, performance guarantees, and comprehensive theorem proving.
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178c6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Probot](https://img.shields.io/badge/Probot-GitHub_App-00befd?logo=github)](https://probot.github.io/)
+[![Lean](https://img.shields.io/badge/Lean-4-1f425f)](https://leanprover.github.io/)
 
-<p align="center">
-  <img src=".github/assets/SpecSync1.png" alt="SpecSync Logo" width="300"/>
-</p>
+[Features](#what-it-does) · [Quick start](#quick-start) · [Configuration](#configuration) · [Development](#development) · [Deploy](#production)
 
-## Advanced Architecture
+<br/>
 
+<img src=".github/assets/SpecSync1.png" alt="SpecSync" width="280"/>
+
+<br/>
+
+</div>
+
+---
+
+## What it does
+
+| Capability               | Description                                                                                      |
+| ------------------------ | ------------------------------------------------------------------------------------------------ |
+| **Event-driven**         | Listens on GitHub for pull requests, pushes, and comments—then runs the analysis pipeline.       |
+| **Multi-language diffs** | Parses changes across common languages using Tree-sitter–backed extraction.                      |
+| **LLM-assisted specs**   | Proposes preconditions, postconditions, invariants, and rationale where API keys are configured. |
+| **Lean-ready output**    | Generated modules can target your Lake `specs/` tree so `lake build` stays honest.               |
+| **Operator-friendly**    | Health and readiness routes on the Probot router, Docker image, and CI for Node + Lean.          |
+
+The optional [VS Code extension](vscode-extension/) adds editor-side commands and local proof hooks; the server-side app lives in this repository’s `src/` tree.
+
+---
+
+## Architecture
+
+At a glance: GitHub sends webhooks to **Probot**; the app parses diffs, walks ASTs, asks the **spec analyzer** (and **LLM client** when configured), then posts back via the **GitHub UI** layer. Lean artifacts and CI are first-class paths, not an afterthought.
+
+```mermaid
+flowchart TB
+  subgraph ingest [GitHub]
+    E[Webhooks]
+  end
+  subgraph pipeline [Analysis]
+    D[Diff parser]
+    T[AST extractor]
+    N[Spec analyzer]
+    L[LLM client]
+  end
+  subgraph surface [Surfaces]
+    G[PR comments and checks]
+    K[Lean specs under specs/]
+    S[Slack and dashboards]
+  end
+  E --> D --> T --> N
+  N --> L
+  N --> G
+  N --> K
+  N --> S
 ```
-┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
-│   GitHub PR     │───▶│   Diff Parser   │───▶│  AST Extractor  │
-│   Webhook       │    │   (Multi-lang)  │     │   (Tree-sitter) │
-└─────────────────┘    └─────────────────┘     └─────────────────┘
-                                │                       │
-                                ▼                       ▼
-┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
-│   Spec Cache    │◀───│  Spec Analyzer  │◀───│  LLM Client     │
-│   (Advanced)    │    │   (Enhanced)    │     │ (Multi-Provider)│
-└─────────────────┘    └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
-│   Lean4 Gen     │───▶│  CI Integration │───▶│  Proof Valid    │
-│   (Security)    │    │   (Sigstore)    │     │   (Advanced)    │
-└─────────────────┘    └─────────────────┘     └─────────────────┘
-                                │
-                                ▼
-┌─────────────────┐    ┌─────────────────┐     ┌─────────────────┐
-│  Coverage Track │───▶│  Dashboard UI   │───▶│  Dev Feedback   │
-│   (Real-time)   │    │ (Multi-framework)│    │   (Slack+VSCode)│
-└─────────────────┘    └─────────────────┘     └─────────────────┘
+
+Formal modules consumed by Lake live under [`specs/`](specs/), with [`lakefile.lean`](lakefile.lean) and [`lean-toolchain`](lean-toolchain) pinning the toolchain.
+
+---
+
+## Repository layout
+
+| Location                                   | Role                                                                             |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| [`src/index.ts`](src/index.ts)             | Probot entry: webhooks, `GET /health`, `GET /ready` when the router is available |
+| [`src/`](src/)                             | Application modules—parser, analyzer, GitHub UI, LLM client, generators          |
+| [`dist/`](dist/)                           | Build output from `npm run build` (generated, not committed)                     |
+| [`specs/`](specs/)                         | Lean 4 sources for `lake build`                                                  |
+| [`test/`](test/)                           | Jest tests (`*.test.ts`)                                                         |
+| [`vscode-extension/`](vscode-extension/)   | Editor extension (TypeScript → `out/`)                                           |
+| [`.github/workflows/`](.github/workflows/) | Continuous integration                                                           |
+
+---
+
+## Requirements
+
+- **Node.js** 20 or newer (see [`package.json`](package.json) `engines`)
+- **Lean 4 and Lake** only if you work on or build [`specs/`](specs/) locally (`lake build`)
+
+---
+
+## Quick start
+
+```bash
+git clone <repository-url> && cd SpecSync
+npm ci
+npm run dev
 ```
+
+For a production binary, compile first: `npm run build`, then `npm start` runs `node dist/index.js`.
+
+> **Secrets:** Never commit real keys. Copy [`env.example`](env.example) to `.env` for local use, and inject credentials in production via your host (Kubernetes secrets, Doppler, Vault, etc.).
+
+---
 
 ## Configuration
 
-### Environment Variables
+### Environment
+
+Variable names follow [Probot’s configuration](https://probot.github.io/docs/configuration/). See [`env.example`](env.example) for the full list with comments.
+
+Minimal variables for the GitHub App:
+
 ```env
-# GitHub App
-APP_ID=your_github_app_id
+APP_ID=...
 PRIVATE_KEY="-----BEGIN RSA PRIVATE KEY-----\n...\n-----END RSA PRIVATE KEY-----"
-WEBHOOK_SECRET=your_webhook_secret
-
-# Advanced LLM Integration
-OPENAI_API_KEY=your_openai_api_key
-ANTHROPIC_API_KEY=your_anthropic_api_key
-
-# CI Integration
-LEAN_PATH=lean
-SPECS_DIR=./specs
-COVERAGE_THRESHOLD=70
-
-# Dashboard
-DASHBOARD_PORT=3001
-
-# Developer Feedback
-SLACK_BOT_TOKEN=your_slack_bot_token
-SLACK_CHANNEL=#specsync
-VSCODE_EXTENSION_PATH=./vscode-extension
-
-# UI Framework
-SPECSYNC_EXPERIMENTAL=suggest-only
+WEBHOOK_SECRET=...
 ```
 
-### GitHub App Configuration
+Optional but common:
+
+```env
+OPENAI_API_KEY=...
+ANTHROPIC_API_KEY=...
+GITHUB_TOKEN=...
+SPECS_DIR=specs
+PORT=3000
+```
+
+### GitHub App manifest (reference)
+
+Use this shape when registering the app; point the webhook URL at your deployed Probot instance.
+
 ```yaml
 name: SpecSync
-description: A state-of-the-art, GitHub-native formal specification system
+description: GitHub-native specification assistant
 url: https://github.com/your-org/specsync
 hook_attributes:
   url: https://your-domain.com/webhook
@@ -89,146 +152,109 @@ default_events:
   - pull_request_review_comment
 ```
 
-## Production Deployment
+---
 
-### Docker Deployment
+## Development
+
+| Command                            | What it runs                                          |
+| ---------------------------------- | ----------------------------------------------------- |
+| `npm ci`                           | Install from lockfile                                 |
+| `npm run dev`                      | `tsx watch src/index.ts` for local Probot development |
+| `npm run build`                    | TypeScript compile to `dist/`                         |
+| `npm start`                        | `node dist/index.js`                                  |
+| `npm run typecheck`                | `tsc --noEmit` on `src/`                              |
+| `npm run lint`                     | ESLint ([`eslint.config.mjs`](eslint.config.mjs))     |
+| `npm run format`                   | Prettier write                                        |
+| `npm run format:check`             | Prettier check (also in CI)                           |
+| `npm test`                         | Jest ([`jest.config.js`](jest.config.js))             |
+| `npm run test:coverage`            | Jest with coverage                                    |
+| `npm run demo` / `npm run ui-demo` | Demos (run `build` first)                             |
+| `node verify-deployment.js`        | Sanity-check paths and workflow files                 |
+
+### Health checks
+
+When the Probot server exposes a router, the app registers:
+
+- `GET /health` — liveness
+- `GET /ready` — readiness (extend when you add databases or queues)
+
+The [`Dockerfile`](Dockerfile) healthcheck expects `GET /health` on the process port (default `3000`).
+
+---
+
+## Lean and Lake
+
+- **CI:** [`lean4-ci.yml`](.github/workflows/lean4-ci.yml) runs `lake build` via [lean-action](https://github.com/leanprover/lean-action) when Lean-related paths change.
+- **Local:** From the repo root, `lake build` after installing Elan/Lean.
+- **Generator contract:** Output from [`src/lean4-generator.ts`](src/lean4-generator.ts) should respect `SPECS_DIR` (default `specs`) so files sit in the same Lake library as [`lakefile.lean`](lakefile.lean).
+
+---
+
+## Continuous integration
+
+| Workflow                                         | Purpose                                    |
+| ------------------------------------------------ | ------------------------------------------ |
+| [`node-ci.yml`](.github/workflows/node-ci.yml)   | Lint, format check, typecheck, build, test |
+| [`lean4-ci.yml`](.github/workflows/lean4-ci.yml) | `lake build` for Lean specs                |
+
+[`dependabot.yml`](.github/dependabot.yml) schedules weekly npm updates for the root package and [`vscode-extension/`](vscode-extension/).
+
+---
+
+## Production
+
+### Docker
+
+Multi-stage **Node 22 Alpine** image: installs dependencies, runs `npm run build`, prunes devDependencies, runs as a non-root user.
+
 ```bash
-# Build and run with advanced features
 docker build -t specsync .
-docker run -p 3000:3000 -p 3001:3001 \
-  -e APP_ID=<app-id> \
-  -e PRIVATE_KEY=<pem-value> \
-  -e OPENAI_API_KEY=<openai-key> \
-  -e ANTHROPIC_API_KEY=<anthropic-key> \
+docker run -p 3000:3000 \
+  -e APP_ID=<id> \
+  -e PRIVATE_KEY=<pem-or-base64> \
+  -e WEBHOOK_SECRET=<secret> \
   specsync
 ```
 
-### Cloud Deployment
-```bash
-# Railway/Heroku deployment
-railway up
-# or
-heroku create specsync-app
-git push heroku main
-```
+Add LLM keys the same way if you use live models in production.
 
-## Usage Examples
+### Other platforms
 
-### Enhanced Spec Generation
-```javascript
-// The system now generates comprehensive specifications including:
-{
-  "preconditions": [
-    "All input parameters are valid and non-null",
-    "Authentication and authorization are verified",
-    "Input validation passes all security checks"
-  ],
-  "postconditions": [
-    "Function completes execution successfully",
-    "Return value matches expected type",
-    "No information leakage occurs",
-    "Resources are properly cleaned up"
-  ],
-  "complexity": {
-    "time": "O(n)",
-    "space": "O(1)"
-  },
-  "security": {
-    "vulnerabilities": [
-      "Potential input validation bypass",
-      "Possible information disclosure"
-    ],
-    "mitigations": [
-      "Implement strict input validation",
-      "Use parameterized queries"
-    ]
-  },
-  "confidence": 0.85,
-  "rationale": "Function modifies critical state and requires comprehensive validation"
-}
-```
+Any environment that provides Node, `PORT`, Probot env vars, and a **public HTTPS URL** for GitHub webhooks will work—containers on AWS/GCP/Azure, Fly.io, Railway, Heroku, or a VM behind nginx.
 
-### UI Framework Usage
+---
 
-```bash
-# Run the complete UI demo
-npm run ui-demo
+## Usage notes
 
-# Start the web dashboard
-npm run dashboard
+- **Demos:** After `npm run build`, run `npm run demo` or `npm run ui-demo`.
+- **VS Code:** See [`vscode-extension/README.md`](vscode-extension/README.md) for building the extension (`npx tsc -p .` inside that folder).
+- **Lean:** Modules under `specs/` should pass `lake build`; proof sketches may use `sorry` until completed.
 
-# Generate VSCode extension
-node -e "const { VSCodeUI } = require('./src/vscode-ui'); new VSCodeUI().generateVSCodeExtension();"
-```
+---
 
-### UI Components Demo
+## Quality and security
 
-The UI framework provides comprehensive components across all surfaces:
+- Pull requests run lint, format, typecheck, build, and tests; Lean CI validates the Lake project.
+- Prefer Dependabot PRs and periodic `npm audit` before releases.
+- Probot uses structured logging; see [`src/health.ts`](src/health.ts) for optional standalone health HTTP.
 
-- **GitHub Integration**: Spec comments, coverage badges, proof check sidebar
-- **VSCode Plugin**: Inline annotations, suggestion panel, proof runner
-- **Web Dashboard**: Coverage maps, drift monitoring, audit explorer
-- **Slack Alerts**: Drift notifications, proof failure alerts
-- **Design Principles**: Height constraints, confidence transparency, progressive enhancement
-
-### Advanced Lean4 Generation
-```lean
--- Security Lemma: Potential input validation bypass
-lemma security_lemma_1 : ∀ (input : InputType), 
-  (isValidInput input) → 
-  (isSecureInput input) := by
-  intro input
-  intro h_valid h_secure
-  -- Proof that input validation prevents vulnerability
-  sorry
-
--- Performance Lemma: Time Complexity
-lemma time_complexity_bound : ∀ (input : InputType), 
-  (inputSize input ≤ n) → 
-  (executionTime input ≤ f n) := by
-  intro input
-  intro h_size
-  -- Proof of time complexity bound
-  sorry
-```
-
-## Performance Metrics
-
-### Advanced Analysis
-- **Response Time**: <2 seconds for comprehensive spec generation
-- **Coverage**: 95%+ test coverage with 47 passing tests
-- **Reliability**: 100% uptime with graceful fallbacks
-- **Scalability**: Horizontal scaling ready with caching
-- **Security**: Comprehensive input validation and sanitization
-
-### Quality Assurance
-- **Code Quality**: ESLint compliant, JSDoc documented
-- **Error Handling**: Comprehensive try-catch blocks
-- **Type Safety**: Proper parameter validation throughout
-- **Performance**: Optimized with caching and async operations
+---
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit your changes: `git commit -m 'Add amazing feature'`
-4. Push to the branch: `git push origin feature/amazing-feature`
-5. Open a Pull Request
+1. Fork and branch from `main`.
+2. Run `npm ci`, then `npm run lint`, `npm run typecheck`, `npm test`, and `npm run build`.
+3. Add or update tests for behavior changes; run `npm run format`.
+4. Open a PR with a clear description. [Conventional commits](https://www.conventionalcommits.org/) are welcome.
 
-### Development Guidelines
-- Follow the existing code style
-- Add tests for new features
-- Update documentation as needed
-- Use conventional commits
-- Ensure security and performance analysis
+---
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+Distributed under the [MIT License](LICENSE).
+
+---
 
 ## Acknowledgments
 
-- [Probot](https://probot.github.io/) for GitHub App framework
-- [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) for AST parsing
-- [Lean4](https://leanprover.github.io/) for formal verification
-- [OpenAI](https://openai.com/) and [Anthropic](https://www.anthropic.com/) for LLM integration
+[Probot](https://probot.github.io/) · [Tree-sitter](https://tree-sitter.github.io/tree-sitter/) · [Lean 4](https://leanprover.github.io/) · [Lake](https://github.com/leanprover/lean4) · [OpenAI](https://openai.com/) · [Anthropic](https://www.anthropic.com/)

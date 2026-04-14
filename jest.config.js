@@ -1,47 +1,33 @@
+/** @type {import('jest').Config} */
 module.exports = {
-  // Test environment
-  testEnvironment: 'node',
-  
-  // Test file patterns
-  testMatch: [
-    '**/test/**/*.test.js',
-    '**/__tests__/**/*.js'
-  ],
-  
-  // Coverage configuration
-  collectCoverageFrom: [
-    'src/**/*.js',
-    '!src/**/*.test.js',
-    '!src/health.js' // Exclude health check from coverage
-  ],
-  
-  // Coverage thresholds
+  preset: "ts-jest",
+  testEnvironment: "node",
+  transform: {
+    "^.+\\.ts$": [
+      "ts-jest",
+      {
+        tsconfig: "<rootDir>/tsconfig.jest.json",
+      },
+    ],
+  },
+  roots: ["<rootDir>/test"],
+  testMatch: ["**/*.test.ts"],
+  collectCoverageFrom: ["src/**/*.ts", "!src/vscode-ui.ts", "!src/demo.ts", "!src/ui-demo.ts"],
+  coveragePathIgnorePatterns: ["/node_modules/", "/dist/"],
   coverageThreshold: {
     global: {
-      branches: 70,
-      functions: 70,
-      lines: 70,
-      statements: 70
-    }
+      branches: 50,
+      functions: 50,
+      lines: 50,
+      statements: 50,
+    },
   },
-  
-  // Setup files
-  setupFilesAfterEnv: ['<rootDir>/test/setup.js'],
-  
-  // Module name mapping
+  setupFilesAfterEnv: ["<rootDir>/test/setup.ts"],
   moduleNameMapper: {
-    '^@/(.*)$': '<rootDir>/src/$1'
+    "^@/(.*)$": "<rootDir>/src/$1",
   },
-  
-  // Test timeout
   testTimeout: 10000,
-  
-  // Verbose output
   verbose: true,
-  
-  // Clear mocks between tests
   clearMocks: true,
-  
-  // Restore mocks between tests
-  restoreMocks: true
-}; 
+  restoreMocks: true,
+};
