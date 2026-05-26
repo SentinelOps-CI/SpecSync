@@ -1,6 +1,16 @@
 <div align="center">
 
-# SpecSync
+<pre>
+##################################################################################
+#                                                                                #
+#               ____                  ____                         _             #
+#              / ___| _ __   ___  ___/ ___| _   _ _ __   ___      | |            #
+#              \___ \| '_ \ / _ \/ __\___ \| | | | '_ \ / __|     | |            #
+#               ___) | |_) |  __/ (__ ___) | |_| | | | | (__      |_|            #
+#              |____/| .__/ \___|\___|____/ \__, |_| |_|\___|     (_)            #
+#                    |_|                    |___/                                #
+##################################################################################
+</pre>
 
 **Formal specs, meet your pull requests.**
 
@@ -12,12 +22,6 @@ A GitHub App that turns diffs into structured specification suggestions—powere
 [![Lean](https://img.shields.io/badge/Lean-4-1f425f)](https://leanprover.github.io/)
 
 [Features](#what-it-does) · [Quick start](#quick-start) · [Configuration](#configuration) · [Development](#development) · [Deploy](#production)
-
-<br/>
-
-<img src=".github/assets/SpecSync1.png" alt="SpecSync" width="280"/>
-
-<br/>
 
 </div>
 
