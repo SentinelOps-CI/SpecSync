@@ -1,7 +1,11 @@
-// @ts-nocheck
 const { WebClient } = require("@slack/web-api");
 
 export class SlackAlerts {
+  slack: any;
+  channel: any;
+  botToken: any;
+  silencedAlerts: any;
+  threadTimestamps: any;
   constructor() {
     this.slack = null;
     this.channel = process.env.SLACK_CHANNEL || "#specsync";
@@ -27,7 +31,7 @@ export class SlackAlerts {
    * Inputs: drift_events.json, CODEOWNERS mapping.
    * Explicit Outputs: Actionable alert with Review and Silence buttons
    */
-  async sendDriftAlert(driftEvent) {
+  async sendDriftAlert(driftEvent: any) {
     if (!this.slack) {
       console.log("Slack not configured, skipping drift alert");
       return;
@@ -52,7 +56,7 @@ export class SlackAlerts {
 
       console.log(`Drift alert sent: ${result.ts}`);
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to send drift alert:", error);
       throw error;
     }
@@ -63,27 +67,27 @@ export class SlackAlerts {
    * @param {Object} driftEvent - Drift event object
    * @returns {Object} Formatted message
    */
-  formatDriftMessage(driftEvent) {
+  formatDriftMessage(driftEvent: any) {
     const severityEmoji = {
       high: "🔴",
       medium: "🟡",
       low: "🟢",
     };
 
-    const severityColor = {
+    const severityColor: Record<string, string> = {
       high: "#dc3545",
       medium: "#ffc107",
       low: "#28a745",
     };
 
-    const text = `${severityEmoji[driftEvent.severity]} Drift detected in \`${driftEvent.functionName}\` (module ${driftEvent.module}).\nReason: ${driftEvent.reason}`;
+    const text = `${(severityEmoji as Record<string, string>)[driftEvent.severity] || "⚪"} Drift detected in \`${driftEvent.functionName}\` (module ${driftEvent.module}).\nReason: ${driftEvent.reason}`;
 
     const blocks = [
       {
         type: "header",
         text: {
           type: "plain_text",
-          text: `${severityEmoji[driftEvent.severity]} Spec Drift Detected`,
+          text: `${(severityEmoji as Record<string, string>)[driftEvent.severity] || "⚪"} Spec Drift Detected`,
           emoji: true,
         },
       },
@@ -170,7 +174,7 @@ export class SlackAlerts {
    * Inputs: GitHub Action failure payload.
    * Explicit Outputs: Red alert with View Logs button and thread updates
    */
-  async sendProofFailureAlert(proofFailure) {
+  async sendProofFailureAlert(proofFailure: any) {
     if (!this.slack) {
       console.log("Slack not configured, skipping proof failure alert");
       return;
@@ -192,7 +196,7 @@ export class SlackAlerts {
       this.storeThreadTimestamp(proofFailure.prNumber, result.ts);
 
       return result;
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to send proof failure alert:", error);
       throw error;
     }
@@ -203,7 +207,7 @@ export class SlackAlerts {
    * @param {Object} proofFailure - Proof failure object
    * @returns {Object} Formatted message
    */
-  formatProofFailureMessage(proofFailure) {
+  formatProofFailureMessage(proofFailure: any) {
     const text = `🔴 Proof failed for PR #${proofFailure.prNumber}.\nFunction: ${proofFailure.functionName}\nLean error: ${proofFailure.error}`;
 
     const blocks = [
@@ -292,7 +296,7 @@ export class SlackAlerts {
    * @param {string} prNumber - PR number
    * @param {string} threadTs - Thread timestamp
    */
-  storeThreadTimestamp(prNumber, threadTs) {
+  storeThreadTimestamp(prNumber: string, threadTs: string) {
     if (!this.threadTimestamps) {
       this.threadTimestamps = new Map();
     }
@@ -304,7 +308,7 @@ export class SlackAlerts {
    * @param {string} prNumber - PR number
    * @returns {string|null} Thread timestamp
    */
-  getThreadTimestamp(prNumber) {
+  getThreadTimestamp(prNumber: string) {
     return this.threadTimestamps ? this.threadTimestamps.get(prNumber) : null;
   }
 
@@ -312,7 +316,7 @@ export class SlackAlerts {
    * Enhanced handle interactive messages with improved error handling
    * @param {Object} payload - Slack interactive message payload
    */
-  async handleInteractiveMessage(payload) {
+  async handleInteractiveMessage(payload: any) {
     if (payload.type === "block_actions") {
       for (const action of payload.actions) {
         if (action.action_id === "silence_drift_alert") {
@@ -327,7 +331,7 @@ export class SlackAlerts {
    * @param {string} value - JSON string with alert details
    * @param {Object} payload - Slack payload
    */
-  async handleSilenceAlert(value, payload) {
+  async handleSilenceAlert(value: string, payload: any) {
     try {
       const { alertKey, duration } = JSON.parse(value);
 
@@ -345,7 +349,7 @@ export class SlackAlerts {
       });
 
       console.log(`Alert silenced: ${alertKey}`);
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error handling silence alert:", error);
     }
   }
@@ -355,7 +359,7 @@ export class SlackAlerts {
    * @param {string} alertKey - Alert key
    * @returns {boolean} Is silenced
    */
-  isAlertSilenced(alertKey) {
+  isAlertSilenced(alertKey: string) {
     const silenced = this.silencedAlerts.get(alertKey);
     if (!silenced) return false;
 
@@ -385,7 +389,7 @@ export class SlackAlerts {
    * @param {string} threadTs - Thread timestamp
    * @param {Object} statusUpdate - Status update object
    */
-  async sendThreadUpdate(threadTs, statusUpdate) {
+  async sendThreadUpdate(threadTs: string, statusUpdate: any) {
     if (!this.slack) return;
 
     const message = this.formatStatusUpdateMessage(statusUpdate);
@@ -397,7 +401,7 @@ export class SlackAlerts {
         text: message.text,
         blocks: message.blocks,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to send thread update:", error);
     }
   }
@@ -407,7 +411,7 @@ export class SlackAlerts {
    * @param {Object} statusUpdate - Status update object
    * @returns {Object} Formatted message
    */
-  formatStatusUpdateMessage(statusUpdate) {
+  formatStatusUpdateMessage(statusUpdate: any) {
     const emoji = statusUpdate.success ? "✅" : "❌";
     const text = `${emoji} Proof ${statusUpdate.success ? "passed" : "failed"}: ${statusUpdate.functionName}`;
 
@@ -438,7 +442,7 @@ export class SlackAlerts {
    * Send coverage summary alert
    * @param {Object} coverageSummary - Coverage summary object
    */
-  async sendCoverageSummary(coverageSummary) {
+  async sendCoverageSummary(coverageSummary: any) {
     if (!this.slack) return;
 
     const message = this.formatCoverageSummaryMessage(coverageSummary);
@@ -449,7 +453,7 @@ export class SlackAlerts {
         text: message.text,
         blocks: message.blocks,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to send coverage summary:", error);
     }
   }
@@ -459,7 +463,7 @@ export class SlackAlerts {
    * @param {Object} coverageSummary - Coverage summary object
    * @returns {Object} Formatted message
    */
-  formatCoverageSummaryMessage(coverageSummary) {
+  formatCoverageSummaryMessage(coverageSummary: any) {
     const { coverage, totalFunctions, coveredFunctions, failedProofs } = coverageSummary;
 
     const emoji = coverage >= 70 ? "🟢" : coverage >= 50 ? "🟡" : "🔴";
@@ -518,7 +522,7 @@ export class SlackAlerts {
    * Send drift resolution alert
    * @param {Object} driftResolution - Drift resolution object
    */
-  async sendDriftResolution(driftResolution) {
+  async sendDriftResolution(driftResolution: any) {
     if (!this.slack) return;
 
     const message = this.formatDriftResolutionMessage(driftResolution);
@@ -529,7 +533,7 @@ export class SlackAlerts {
         text: message.text,
         blocks: message.blocks,
       });
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to send drift resolution:", error);
     }
   }
@@ -539,7 +543,7 @@ export class SlackAlerts {
    * @param {Object} driftResolution - Drift resolution object
    * @returns {Object} Formatted message
    */
-  formatDriftResolutionMessage(driftResolution) {
+  formatDriftResolutionMessage(driftResolution: any) {
     const text = `✅ Drift resolved: ${driftResolution.functionName} in ${driftResolution.module}`;
 
     const blocks = [
@@ -613,10 +617,10 @@ export class SlackAlerts {
         user: result.user,
         channel: this.channel,
       };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         connected: false,
-        error: error.message,
+        error: (error instanceof Error ? error.message : String(error)),
       };
     }
   }

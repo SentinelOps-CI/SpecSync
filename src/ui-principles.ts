@@ -1,8 +1,9 @@
-// @ts-nocheck
 const fs = require("fs-extra");
 const path = require("path");
 
 export class UIPrinciples {
+  experimentalFlag: any;
+  confidenceThreshold: any;
   constructor() {
     this.experimentalFlag = process.env.SPECSYNC_EXPERIMENTAL || "suggest-only";
     this.confidenceThreshold = 0.7; // Minimum confidence for displaying suggestions
@@ -13,13 +14,13 @@ export class UIPrinciples {
    * "For each new UI element, provide screenshot GIFs showing default-collapsed state and expanded state.
    * Reviewer must confirm collapsed state occupies ≤ 24 px height, zero flicker."
    */
-  validateInvisibleUntilHelpful(element) {
+  validateInvisibleUntilHelpful(element: any) {
     const validation = {
       element: element.name,
       collapsedHeight: this.measureCollapsedHeight(element),
       hasFlicker: this.detectFlicker(element),
       isValid: true,
-      issues: [],
+      issues: [] as string[],
       screenshotRequirements: this.generateScreenshotRequirements(element),
     };
 
@@ -43,7 +44,7 @@ export class UIPrinciples {
    * @param {Object} element - UI element object
    * @returns {number} Height in pixels
    */
-  measureCollapsedHeight(element) {
+  measureCollapsedHeight(element: any) {
     // Enhanced height measurements based on element type and content
     const heightMap = {
       "spec-comment": 20,
@@ -57,7 +58,7 @@ export class UIPrinciples {
     };
 
     // Adjust height based on content length
-    let baseHeight = heightMap[element.type] || 20;
+    let baseHeight = (heightMap as Record<string, number>)[element.type] || 20;
 
     if (element.content && element.content.length > 50) {
       baseHeight += 4; // Add padding for longer content
@@ -71,7 +72,7 @@ export class UIPrinciples {
    * @param {Object} element - UI element object
    * @returns {boolean} Has flicker
    */
-  detectFlicker(element) {
+  detectFlicker(element: any) {
     // Enhanced flicker detection patterns
     const flickerPatterns = [
       "opacity: 0",
@@ -107,7 +108,7 @@ export class UIPrinciples {
    * @param {Object} element - UI element object
    * @returns {Object} Screenshot requirements
    */
-  generateScreenshotRequirements(element) {
+  generateScreenshotRequirements(element: any) {
     return {
       element: element.name,
       requirements: [
@@ -183,7 +184,7 @@ export class UIPrinciples {
    * @param {Object} suggestion - Suggestion object
    * @returns {boolean} Has confidence field
    */
-  hasConfidenceField(suggestion) {
+  hasConfidenceField(suggestion: any) {
     return suggestion.hasOwnProperty("confidence") && typeof suggestion.confidence === "number";
   }
 
@@ -192,12 +193,12 @@ export class UIPrinciples {
    * @param {Object} suggestion - Suggestion object
    * @returns {boolean} Has rationale field
    */
-  hasRationaleField(suggestion) {
-    return (
-      suggestion.hasOwnProperty("rationale") &&
-      typeof suggestion.rationale === "string" &&
-      suggestion.rationale.length > 0
-    );
+  hasRationaleField(suggestion: any) {
+    const text =
+      (typeof suggestion.rationale === "string" && suggestion.rationale) ||
+      (typeof suggestion.reasoning === "string" && suggestion.reasoning) ||
+      "";
+    return text.length > 0;
   }
 
   /**
@@ -205,17 +206,17 @@ export class UIPrinciples {
    * @param {Object} suggestion - Suggestion object
    * @returns {number} Confidence value
    */
-  getConfidenceValue(suggestion) {
+  getConfidenceValue(suggestion: any) {
     return suggestion.confidence || 0;
   }
 
   /**
-   * Get rationale text from suggestion
+   * Get rationale text from suggestion (`rationale` or canonical `reasoning`)
    * @param {Object} suggestion - Suggestion object
    * @returns {string} Rationale text
    */
-  getRationaleText(suggestion) {
-    return suggestion.rationale || "";
+  getRationaleText(suggestion: any) {
+    return suggestion.rationale || suggestion.reasoning || "";
   }
 
   /**
@@ -231,7 +232,7 @@ export class UIPrinciples {
    * @param {Object} feature - Feature object
    * @returns {boolean} Requires experimental flag
    */
-  requiresExperimentalFlag(feature) {
+  requiresExperimentalFlag(feature: any) {
     const experimentalFeatures = [
       "proof-gating",
       "drift-detection",
@@ -248,7 +249,7 @@ export class UIPrinciples {
    * @param {Object} feature - Feature object
    * @returns {boolean} Is enabled
    */
-  isFeatureEnabled(feature) {
+  isFeatureEnabled(feature: any) {
     if (!this.requiresExperimentalFlag(feature)) {
       return true; // Non-experimental features are always enabled
     }
@@ -261,7 +262,7 @@ export class UIPrinciples {
    * "Every LLM suggestion must include confidence (0-1) and rationale fields in payload.
    * Frontend renders both; failing to display them is CI-blocking via Jest snapshot test."
    */
-  validateConfidenceTransparency(suggestion) {
+  validateConfidenceTransparency(suggestion: any) {
     const validation = {
       suggestion: suggestion.functionName,
       hasConfidence: this.hasConfidenceField(suggestion),
@@ -269,7 +270,7 @@ export class UIPrinciples {
       confidenceValue: this.getConfidenceValue(suggestion),
       rationaleText: this.getRationaleText(suggestion),
       isValid: true,
-      issues: [],
+      issues: [] as string[],
       frontendRendering: this.validateFrontendRendering(suggestion),
     };
 
@@ -316,10 +317,10 @@ export class UIPrinciples {
    * @param {Object} suggestion - Suggestion object
    * @returns {Object} Frontend rendering validation
    */
-  validateFrontendRendering(suggestion) {
+  validateFrontendRendering(suggestion: any) {
     const validation = {
       isValid: true,
-      issues: [],
+      issues: [] as string[],
       components: {
         confidenceDisplay: false,
         rationaleDisplay: false,
@@ -336,8 +337,9 @@ export class UIPrinciples {
       validation.issues.push("Confidence not displayed in frontend");
     }
 
-    // Check if rationale is displayed
-    if (suggestion.rationale && suggestion.rationale.length > 0) {
+    // Check if rationale is displayed (canonical field is `reasoning`)
+    const rationaleText = suggestion.rationale || suggestion.reasoning || "";
+    if (rationaleText.length > 0) {
       validation.components.rationaleDisplay = true;
     } else {
       validation.isValid = false;
@@ -353,7 +355,7 @@ export class UIPrinciples {
     }
 
     // Check accessibility features
-    if (suggestion.confidence !== undefined && suggestion.rationale) {
+    if (suggestion.confidence !== undefined && rationaleText) {
       validation.components.accessibility = true;
     } else {
       validation.issues.push("Accessibility features missing for confidence/rationale display");
@@ -367,7 +369,7 @@ export class UIPrinciples {
    * @param {Object} suggestion - Suggestion object
    * @returns {string} Jest test code
    */
-  generateConfidenceSnapshotTest(suggestion) {
+  generateConfidenceSnapshotTest(suggestion: any) {
     return `
 describe('Confidence Transparency', () => {
   test('should display confidence and rationale for ${suggestion.functionName}', () => {
@@ -424,7 +426,7 @@ describe('Confidence Transparency', () => {
    * @param {Object} suggestion - Suggestion object
    * @returns {string} React component code
    */
-  generateConfidenceDisplayComponent(suggestion) {
+  generateConfidenceDisplayComponent(suggestion: any) {
     return `
 import React from 'react';
 
@@ -480,7 +482,7 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
           <div className="preconditions">
             <h4 id="preconditions-heading">Preconditions</h4>
             <ul aria-labelledby="preconditions-heading">
-              {preconditions.map((pre, index) => (
+              {preconditions.map((pre: any, index: any) => (
                 <li key={index}>{pre}</li>
               ))}
             </ul>
@@ -491,7 +493,7 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
           <div className="postconditions">
             <h4 id="postconditions-heading">Postconditions</h4>
             <ul aria-labelledby="postconditions-heading">
-              {postconditions.map((post, index) => (
+              {postconditions.map((post: any, index: any) => (
                 <li key={index}>{post}</li>
               ))}
             </ul>
@@ -502,7 +504,7 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
           <div className="invariants">
             <h4 id="invariants-heading">Invariants</h4>
             <ul aria-labelledby="invariants-heading">
-              {invariants.map((inv, index) => (
+              {invariants.map((inv: any, index: any) => (
                 <li key={index}>{inv}</li>
               ))}
             </ul>
@@ -520,14 +522,14 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
    * "All critical features gated behind specsync.experimental flag.
    * Default = 'suggest-only'. Proof gating enabled per-repo via Settings toggle."
    */
-  validateProgressiveEnhancement(feature) {
+  validateProgressiveEnhancement(feature: any) {
     const validation = {
       feature: feature.name,
       experimentalFlag: this.experimentalFlag,
       isEnabled: this.isFeatureEnabled(feature),
       requiresExperimental: this.requiresExperimentalFlag(feature),
       isValid: true,
-      issues: [],
+      issues: [] as string[],
       gatingConfiguration: this.generateGatingConfiguration(feature),
     };
 
@@ -559,10 +561,10 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
    * @param {Object} feature - Feature object
    * @returns {Object} Gating configuration
    */
-  generateGatingConfiguration(feature) {
+  generateGatingConfiguration(feature: any) {
     const config = {
       isValid: true,
-      issues: [],
+      issues: [] as string[],
       settings: {
         experimental: this.experimentalFlag,
         perRepo: feature.perRepo || false,
@@ -745,7 +747,7 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
   </div>
 
   <script>
-    function toggleFeature(featureKey, enabled) {
+    function toggleFeature(featureKey: any, enabled: any) {
       // In a real implementation, this would make an API call
       console.log(\`Toggling \${featureKey}: \${enabled}\`);
       
@@ -762,7 +764,7 @@ export const SuggestionDisplay: React.FC<SuggestionProps> = ({
       updateFeatureStatus(featureKey, enabled);
     }
     
-    function updateFeatureStatus(featureKey, enabled) {
+    function updateFeatureStatus(featureKey: any, enabled: any) {
       // Update any dependent UI elements
       console.log(\`Feature \${featureKey} is now \${enabled ? 'enabled' : 'disabled'}\`);
     }
