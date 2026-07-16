@@ -1,17 +1,25 @@
 # GitHub App manifest template (see https://docs.github.com/en/apps/creating-github-apps)
 # Register or update your app in GitHub settings; align webhook URL with your Probot deployment.
 # Full setup: README.md "GitHub App manifest (reference)" and https://probot.github.io/
+#
+# Placeholders (replace before registering the app):
+#   APP_HOMEPAGE_URL  — public homepage for the app (e.g. https://github.com/<org>/SpecSync)
+#   WEBHOOK_URL       — Probot webhook endpoint (e.g. https://<host>/webhook)
+# These are documented here only; GitHub App registration uses concrete URLs, not env var expansion.
 
 name: SpecSync
 description: A GitHub-native, frictionless specification system
-url: https://github.com/your-org/specsync
+url: https://github.com/<org>/SpecSync # APP_HOMEPAGE_URL
 hook_attributes:
-  url: https://your-domain.com/webhook
+  url: https://<host>/webhook # WEBHOOK_URL
   content_type: json
 default_permissions:
-  contents: read
+  # contents:write — accept flow commits specs under .specsync/ on the PR branch
+  contents: write
   pull_requests: write
   issues: write
+  # checks:write — coverage / ProofCheck check runs
+  checks: write
   metadata: read
 default_events:
   - pull_request
