@@ -1,897 +1,410 @@
-// @ts-nocheck
+/**
+ * SpecSync local dashboard — serves data from `.specsync/` only.
+ * Started only when SPECSYNC_DASHBOARD=1 and SPECSYNC_DASHBOARD_SECRET is set.
+ * All HTTP routes (including static) require the shared-secret header.
+ */
 const express = require("express");
 const path = require("path");
-const fs = require("fs-extra");
+const fsExtra = require("fs-extra");
+const fs = fsExtra.default ?? fsExtra;
+const { analysisJobQueue } = require("./analysis-queue");
+
+const SPECSYNC_ROOT = ".specsync";
+
+function escapeHtml(value: any) {
+  return String(value ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const EMPTY_COVERAGE = {
+  summary: {
+    totalFunctions: 0,
+    coveredFunctions: 0,
+    coveragePercentage: 0,
+    lastUpdated: null,
+  },
+  modules: [],
+  source: "empty",
+};
+
+const EMPTY_DRIFT = {
+  timeline: [],
+  summary: {
+    totalDrifts: 0,
+    highSeverity: 0,
+    mediumSeverity: 0,
+    lowSeverity: 0,
+    resolved: 0,
+    pending: 0,
+  },
+  source: "empty",
+};
+
+const EMPTY_STORIES = { stories: [], source: "empty" };
 
 export class WebDashboard {
+  app: any;
+  port: any;
+  host: any;
+  secret: any;
+  server: any;
   constructor() {
     this.app = express();
-    this.port = process.env.DASHBOARD_PORT || 3001;
+    this.port = Number(process.env.DASHBOARD_PORT || 3001);
+    this.host = process.env.DASHBOARD_HOST || "127.0.0.1";
+    this.secret = process.env.SPECSYNC_DASHBOARD_SECRET || "";
+    this.server = null;
     this.setupMiddleware();
     this.setupRoutes();
   }
 
-  /**
-   * Setup middleware
-   */
   setupMiddleware() {
-    this.app.use(express.json());
-    this.app.use(express.static(path.join(__dirname, "public")));
-    this.app.set("view engine", "ejs");
-    this.app.set("views", path.join(__dirname, "views"));
+    this.app.use(express.json({ limit: "256kb" }));
+    this.app.use(this.requireDashboardSecret.bind(this));
   }
 
   /**
-   * Setup routes
+   * Shared-secret AuthZ before any HTTP API or HTML page.
+   * Accepts `X-SpecSync-Dashboard-Secret` or `Authorization: Bearer <secret>`.
    */
+  requireDashboardSecret(req: any, res: any, next: any) {
+    if (!this.secret) {
+      res.status(503).json({
+        error: "Dashboard secret not configured (SPECSYNC_DASHBOARD_SECRET)",
+      });
+      return;
+    }
+
+    const headerSecret = req.get("x-specsync-dashboard-secret");
+    const auth = req.get("authorization") || "";
+    const bearer = auth.toLowerCase().startsWith("bearer ")
+      ? auth.slice(7).trim()
+      : "";
+    const provided = headerSecret || bearer;
+
+    if (!provided || provided !== this.secret) {
+      res.status(401).json({ error: "Unauthorized" });
+      return;
+    }
+    next();
+  }
+
   setupRoutes() {
-    // Prompt 3.1 — Spec Coverage Map
     this.app.get("/api/coverage", this.getCoverageData.bind(this));
-    this.app.get("/coverage", this.renderCoverageMap.bind(this));
-
-    // Prompt 3.2 — Spec Drift Monitor
     this.app.get("/api/drift", this.getDriftData.bind(this));
-    this.app.get("/drift", this.renderDriftMonitor.bind(this));
-
-    // Prompt 3.3 — Story ↔ Spec Linker
     this.app.get("/api/stories", this.getStoriesData.bind(this));
-    this.app.get("/stories", this.renderStoryLinker.bind(this));
-
-    // Prompt 3.4 — Audit Explorer
     this.app.get("/api/audit/:functionId", this.getAuditData.bind(this));
-    this.app.get("/audit/:functionId", this.renderAuditExplorer.bind(this));
+    this.app.get("/api/jobs", this.getJobsMetrics.bind(this));
+    this.app.get("/api/specs", this.listStoredSpecs.bind(this));
 
-    // Dashboard home
+    this.app.get("/coverage", this.renderCoverageMap.bind(this));
+    this.app.get("/drift", this.renderDriftMonitor.bind(this));
     this.app.get("/", this.renderDashboard.bind(this));
   }
 
   /**
-   * Start the dashboard server
+   * Start only when SPECSYNC_DASHBOARD=1 and a secret is configured.
+   * Binds to loopback by default (DASHBOARD_HOST).
    */
   start() {
-    this.app.listen(this.port, () => {
-      console.log(`SpecSync Dashboard running on http://localhost:${this.port}`);
+    if (process.env.SPECSYNC_DASHBOARD !== "1") {
+      console.log("SpecSync Dashboard not started (set SPECSYNC_DASHBOARD=1 to enable)");
+      return null;
+    }
+    if (!this.secret) {
+      console.warn(
+        "SPECSYNC_DASHBOARD=1 but SPECSYNC_DASHBOARD_SECRET is unset; dashboard not started"
+      );
+      return null;
+    }
+
+    this.server = this.app.listen(this.port, this.host, () => {
+      console.log(
+        `SpecSync Dashboard listening on http://${this.host}:${this.port} (secret auth required)`
+      );
+    });
+    return this.server;
+  }
+
+  stop() {
+    if (this.server) {
+      this.server.close();
+      this.server = null;
+    }
+  }
+
+  async getCoverageData(_req: any, res: any) {
+    try {
+      res.json(await this.loadCoverageData());
+    } catch (error: unknown) {
+      res.status(500).json({ error: error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error) });
+    }
+  }
+
+  async getDriftData(_req: any, res: any) {
+    try {
+      res.json(await this.loadDriftData());
+    } catch (error: unknown) {
+      res.status(500).json({ error: error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error) });
+    }
+  }
+
+  async getStoriesData(_req: any, res: any) {
+    try {
+      res.json(await this.loadStoriesData());
+    } catch (error: unknown) {
+      res.status(500).json({ error: error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error) });
+    }
+  }
+
+  async getAuditData(req: any, res: any) {
+    try {
+      const auditData = await this.loadAuditData(req.params.functionId);
+      if (!auditData) {
+        res.status(404).json({ error: "Audit record not found" });
+        return;
+      }
+      res.json(auditData);
+    } catch (error: unknown) {
+      res.status(500).json({ error: error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error) });
+    }
+  }
+
+  async getJobsMetrics(_req: any, res: any) {
+    res.json({
+      source: "analysis-queue",
+      ...analysisJobQueue.getStats(),
     });
   }
 
-  /**
-   * Prompt 3.1 — Spec Coverage Map
-   * Goal: Tree view of repo with color-coded verification status.
-   */
-  async getCoverageData(req, res) {
+  async listStoredSpecs(_req: any, res: any) {
     try {
-      const coverageData = await this.loadCoverageData();
-      res.json(coverageData);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
+      res.json(await this.loadSpecsFromStore());
+    } catch (error: unknown) {
+      res.status(500).json({ error: error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error) });
     }
   }
 
-  async renderCoverageMap(req, res) {
+  async renderCoverageMap(req: any, res: any) {
     try {
       const coverageData = await this.loadCoverageData();
-      res.render("coverage-map", {
-        title: "Spec Coverage Map",
-        coverageData,
-        filters: {
-          author: req.query.author || "",
-          team: req.query.team || "",
-          module: req.query.module || "",
-          dateRange: req.query.dateRange || "all",
-        },
-      });
-    } catch (error) {
-      res.status(500).render("error", { error: error.message });
+      res.type("html").send(this.generateCoverageMapHTML(coverageData));
+    } catch (error: unknown) {
+      res.status(500).type("html").send(`<p>${escapeHtml((error instanceof Error ? error.message : String(error)))}</p>`);
     }
   }
 
-  /**
-   * Load coverage data from file or generate mock data
-   */
+  async renderDriftMonitor(_req: any, res: any) {
+    try {
+      const driftData = await this.loadDriftData();
+      res.type("html").send(this.generateDriftMonitorHTML(driftData));
+    } catch (error: unknown) {
+      res.status(500).type("html").send(`<p>${escapeHtml((error instanceof Error ? error.message : String(error)))}</p>`);
+    }
+  }
+
+  async renderDashboard(_req: any, res: any) {
+    try {
+      const coverageData = await this.loadCoverageData();
+      const driftData = await this.loadDriftData();
+      const jobs = analysisJobQueue.getStats();
+      res.type("html").send(this.generateDashboardHTML(coverageData, driftData, jobs));
+    } catch (error: unknown) {
+      res.status(500).type("html").send(`<p>${escapeHtml((error instanceof Error ? error.message : String(error)))}</p>`);
+    }
+  }
+
+  async readSpecsyncJson(relativePath: any, fallback: any) {
+    const fullPath = path.join(process.cwd(), SPECSYNC_ROOT, relativePath);
+    if (!(await fs.pathExists(fullPath))) {
+      return { ...fallback, source: "empty" };
+    }
+    const data = await fs.readJson(fullPath);
+    return { ...data, source: `.specsync/${relativePath.replace(/\\/g, "/")}` };
+  }
+
   async loadCoverageData() {
-    try {
-      const coveragePath = path.join(process.cwd(), ".specsync", "coverage.json");
-      if (await fs.pathExists(coveragePath)) {
-        return await fs.readJson(coveragePath);
-      }
-    } catch (error) {
-      console.warn("Could not load coverage data:", error.message);
+    const fromFile = await this.readSpecsyncJson("coverage.json", EMPTY_COVERAGE);
+    if (fromFile.source !== "empty") {
+      return fromFile;
     }
-
-    // Generate mock coverage data
-    return this.generateMockCoverageData();
-  }
-
-  /**
-   * Generate mock coverage data for demonstration
-   */
-  generateMockCoverageData() {
+    // Derive a summary from accepted specs on disk when coverage.json is absent.
+    const specs = await this.loadSpecsFromStore();
+    if (specs.specs.length === 0) {
+      return EMPTY_COVERAGE;
+    }
+    const byModule = new Map();
+    for (const spec of specs.specs) {
+      const dir = path.posix.dirname(spec.filePath.replace(/\\/g, "/")) || ".";
+      if (!byModule.has(dir)) {
+        byModule.set(dir, { name: dir, coverage: 100, functions: [] });
+      }
+      byModule.get(dir).functions.push({
+        name: spec.functionName,
+        status: "verified",
+        line: spec.lineNumber || 0,
+      });
+    }
     return {
       summary: {
-        totalFunctions: 150,
-        coveredFunctions: 112,
-        coveragePercentage: 75,
+        totalFunctions: specs.specs.length,
+        coveredFunctions: specs.specs.length,
+        coveragePercentage: 100,
         lastUpdated: new Date().toISOString(),
       },
-      modules: [
-        {
-          name: "src/auth",
-          coverage: 85,
-          functions: [
-            { name: "validateToken", status: "verified", line: 15 },
-            { name: "generateToken", status: "verified", line: 45 },
-            { name: "refreshToken", status: "missing", line: 78 },
-          ],
-        },
-        {
-          name: "src/payment",
-          coverage: 60,
-          functions: [
-            { name: "processPayment", status: "verified", line: 12 },
-            { name: "refundPayment", status: "failed", line: 34 },
-            { name: "validateCard", status: "missing", line: 67 },
-          ],
-        },
-        {
-          name: "src/user",
-          coverage: 90,
-          functions: [
-            { name: "createUser", status: "verified", line: 23 },
-            { name: "updateUser", status: "verified", line: 56 },
-            { name: "deleteUser", status: "verified", line: 89 },
-          ],
-        },
-      ],
+      modules: Array.from(byModule.values()),
+      source: ".specsync/specs",
     };
   }
 
-  /**
-   * Prompt 3.2 — Spec Drift Monitor
-   * Goal: Timeline chart of drift events + alert panel.
-   */
-  async getDriftData(req, res) {
-    try {
-      const driftData = await this.loadDriftData();
-      res.json(driftData);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-
-  async renderDriftMonitor(req, res) {
-    try {
-      const driftData = await this.loadDriftData();
-      res.render("drift-monitor", {
-        title: "Spec Drift Monitor",
-        driftData,
-        filters: {
-          severity: req.query.severity || "all",
-          dateRange: req.query.dateRange || "7d",
-        },
-      });
-    } catch (error) {
-      res.status(500).render("error", { error: error.message });
-    }
-  }
-
-  /**
-   * Load drift data
-   */
   async loadDriftData() {
-    try {
-      const driftPath = path.join(process.cwd(), ".specsync", "drift_events.json");
-      if (await fs.pathExists(driftPath)) {
-        return await fs.readJson(driftPath);
-      }
-    } catch (error) {
-      console.warn("Could not load drift data:", error.message);
-    }
-
-    return this.generateMockDriftData();
+    return this.readSpecsyncJson("drift_events.json", EMPTY_DRIFT);
   }
 
-  /**
-   * Generate mock drift data
-   */
-  generateMockDriftData() {
-    return {
-      timeline: [
-        {
-          timestamp: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-          functionName: "withdraw",
-          module: "src/payment",
-          severity: "high",
-          reason: "Postcondition weakened",
-          author: "alice@company.com",
-          commit: "abc1234",
-        },
-        {
-          timestamp: new Date(Date.now() - 6 * 60 * 60 * 1000).toISOString(),
-          functionName: "validateToken",
-          module: "src/auth",
-          severity: "medium",
-          reason: "Precondition changed",
-          author: "bob@company.com",
-          commit: "def5678",
-        },
-        {
-          timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-          functionName: "processPayment",
-          module: "src/payment",
-          severity: "low",
-          reason: "Invariant updated",
-          author: "charlie@company.com",
-          commit: "ghi9012",
-        },
-      ],
-      summary: {
-        totalDrifts: 3,
-        highSeverity: 1,
-        mediumSeverity: 1,
-        lowSeverity: 1,
-        resolved: 0,
-        pending: 3,
-      },
-    };
-  }
-
-  /**
-   * Prompt 3.3 — Story ↔ Spec Linker
-   * Goal: Trace JIRA stories to formal specs and code.
-   */
-  async getStoriesData(req, res) {
-    try {
-      const storiesData = await this.loadStoriesData();
-      res.json(storiesData);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-
-  async renderStoryLinker(req, res) {
-    try {
-      const storiesData = await this.loadStoriesData();
-      res.render("story-linker", {
-        title: "Story ↔ Spec Linker",
-        storiesData,
-      });
-    } catch (error) {
-      res.status(500).render("error", { error: error.message });
-    }
-  }
-
-  /**
-   * Load stories data
-   */
   async loadStoriesData() {
-    try {
-      const storiesPath = path.join(process.cwd(), ".specsync", "story_map.json");
-      if (await fs.pathExists(storiesPath)) {
-        return await fs.readJson(storiesPath);
+    return this.readSpecsyncJson("story_map.json", EMPTY_STORIES);
+  }
+
+  async loadAuditData(functionId: any) {
+    const safeId = String(functionId || "").replace(/[^a-zA-Z0-9._-]/g, "_");
+    const auditPath = path.join(process.cwd(), SPECSYNC_ROOT, "audit", `${safeId}.json`);
+    if (!(await fs.pathExists(auditPath))) {
+      return null;
+    }
+    return fs.readJson(auditPath);
+  }
+
+  async loadSpecsFromStore() {
+    const specsDir = path.join(process.cwd(), SPECSYNC_ROOT, "specs");
+    if (!(await fs.pathExists(specsDir))) {
+      return { specs: [], source: "empty" };
+    }
+    const files = await fs.readdir(specsDir);
+    const specs = [];
+    for (const file of files) {
+      if (!file.endsWith(".json")) continue;
+      try {
+        const data = await fs.readJson(path.join(specsDir, file));
+        specs.push({
+          storeFile: file,
+          functionName: data.functionName,
+          filePath: data.filePath,
+          lineNumber: data.lineNumber,
+          confidence: data.confidence,
+          acceptedAt: data.acceptedAt,
+          pr: data.pr,
+          sha: data.sha,
+        });
+      } catch {
+        // skip corrupt entries
       }
-    } catch (error) {
-      console.warn("Could not load stories data:", error.message);
     }
-
-    return this.generateMockStoriesData();
+    return { specs, source: ".specsync/specs" };
   }
 
-  /**
-   * Generate mock stories data
-   */
-  generateMockStoriesData() {
-    return {
-      stories: [
-        {
-          id: "PROJ-123",
-          title: "Implement secure payment processing",
-          status: "in-progress",
-          coverage: 75,
-          specs: [
-            {
-              functionName: "processPayment",
-              theorem: "payment_security_theorem",
-              status: "verified",
-            },
-            { functionName: "validateCard", theorem: "card_validation_theorem", status: "missing" },
-          ],
-          driftWarnings: 1,
-        },
-        {
-          id: "PROJ-124",
-          title: "Add user authentication",
-          status: "done",
-          coverage: 100,
-          specs: [
-            {
-              functionName: "validateToken",
-              theorem: "token_validation_theorem",
-              status: "verified",
-            },
-            {
-              functionName: "generateToken",
-              theorem: "token_generation_theorem",
-              status: "verified",
-            },
-          ],
-          driftWarnings: 0,
-        },
-        {
-          id: "PROJ-125",
-          title: "User profile management",
-          status: "todo",
-          coverage: 0,
-          specs: [],
-          driftWarnings: 0,
-        },
-      ],
-    };
-  }
-
-  /**
-   * Prompt 3.4 — Audit Explorer
-   * Goal: Compliance-friendly modal showing complete proof lineage.
-   */
-  async getAuditData(req, res) {
-    try {
-      const functionId = req.params.functionId;
-      const auditData = await this.loadAuditData(functionId);
-      res.json(auditData);
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  }
-
-  async renderAuditExplorer(req, res) {
-    try {
-      const functionId = req.params.functionId;
-      const auditData = await this.loadAuditData(functionId);
-      res.render("audit-explorer", {
-        title: `Audit Explorer - ${functionId}`,
-        auditData,
-      });
-    } catch (error) {
-      res.status(500).render("error", { error: error.message });
-    }
-  }
-
-  /**
-   * Load audit data for a specific function
-   */
-  async loadAuditData(functionId) {
-    try {
-      const auditPath = path.join(process.cwd(), ".specsync", "audit", `${functionId}.json`);
-      if (await fs.pathExists(auditPath)) {
-        return await fs.readJson(auditPath);
-      }
-    } catch (error) {
-      console.warn("Could not load audit data:", error.message);
-    }
-
-    return this.generateMockAuditData(functionId);
-  }
-
-  /**
-   * Generate mock audit data
-   */
-  generateMockAuditData(functionId) {
-    return {
-      functionId,
-      lineage: [
-        {
-          timestamp: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-          author: "alice@company.com",
-          commit: "abc1234",
-          theorem: `${functionId}_security_theorem`,
-          proofHash: "sha256:abc123def456",
-          status: "verified",
-          downloadUrl: `/download/proof/${functionId}_security_theorem.lean`,
-        },
-        {
-          timestamp: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-          author: "bob@company.com",
-          commit: "def5678",
-          theorem: `${functionId}_correctness_theorem`,
-          proofHash: "sha256:def456ghi789",
-          status: "verified",
-          downloadUrl: `/download/proof/${functionId}_correctness_theorem.lean`,
-        },
-      ],
-      metadata: {
-        sigstoreSignature: "sigstore:abc123def456",
-        verificationTimestamp: new Date().toISOString(),
-        proofArtifacts: [
-          {
-            name: `${functionId}_security_theorem.lean`,
-            size: "2.3KB",
-            hash: "sha256:abc123def456",
-          },
-          {
-            name: `${functionId}_correctness_theorem.lean`,
-            size: "1.8KB",
-            hash: "sha256:def456ghi789",
-          },
-        ],
-      },
-    };
-  }
-
-  /**
-   * Render main dashboard
-   */
-  async renderDashboard(req, res) {
-    try {
-      const coverageData = await this.loadCoverageData();
-      const driftData = await this.loadDriftData();
-      const storiesData = await this.loadStoriesData();
-
-      res.render("dashboard", {
-        title: "SpecSync Dashboard",
-        coverageData,
-        driftData,
-        storiesData,
-      });
-    } catch (error) {
-      res.status(500).render("error", { error: error.message });
-    }
-  }
-
-  /**
-   * Generate HTML templates for dashboard components
-   */
-  generateCoverageMapHTML(data) {
-    return `
-<!DOCTYPE html>
+  generateDashboardHTML(coverage: any, drift: any, jobs: any) {
+    const summary = coverage.summary || EMPTY_COVERAGE.summary;
+    const driftSummary = drift.summary || EMPTY_DRIFT.summary;
+    return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Spec Coverage Map</title>
+  <title>SpecSync Dashboard</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-    .coverage-tree { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-    .tree-node { padding: 8px 16px; border-bottom: 1px solid #f0f0f0; cursor: pointer; }
-    .tree-node:hover { background: #f8f9fa; }
-    .tree-node.folder { font-weight: bold; }
-    .tree-node.file { padding-left: 32px; }
-    .status-badge { display: inline-block; padding: 2px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
-    .status-verified { background: #d4edda; color: #155724; }
-    .status-missing { background: #f8d7da; color: #721c24; }
-    .status-failed { background: #fff3cd; color: #856404; }
-    .filters { margin-bottom: 20px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-    .filter-group { display: inline-block; margin-right: 20px; }
-    .filter-group label { display: block; margin-bottom: 4px; font-weight: bold; }
-    .filter-group select, .filter-group input { padding: 6px 12px; border: 1px solid #ddd; border-radius: 4px; }
+    body { font-family: system-ui, sans-serif; margin: 2rem; color: #1a1a1a; background: #f6f7f9; }
+    h1 { margin-top: 0; }
+    .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .card { background: #fff; padding: 1rem 1.25rem; border: 1px solid #e2e5ea; }
+    a { color: #0b57d0; }
+    .muted { color: #667085; font-size: 0.875rem; }
   </style>
+</head>
+<body>
+  <h1>SpecSync</h1>
+  <p class="muted">Data source: ${escapeHtml(coverage.source || "empty")}</p>
+  <div class="grid">
+    <div class="card">
+      <h2>Coverage</h2>
+      <p>${escapeHtml(summary.coveredFunctions)} / ${escapeHtml(summary.totalFunctions)}
+         (${escapeHtml(summary.coveragePercentage)}%)</p>
+      <p><a href="/coverage">Coverage map</a></p>
+    </div>
+    <div class="card">
+      <h2>Drift</h2>
+      <p>Pending: ${escapeHtml(driftSummary.pending)} / Total: ${escapeHtml(driftSummary.totalDrifts)}</p>
+      <p><a href="/drift">Drift monitor</a></p>
+    </div>
+    <div class="card">
+      <h2>Jobs</h2>
+      <p>Running: ${escapeHtml(jobs.running)} / Total tracked: ${escapeHtml(jobs.total)}</p>
+      <p class="muted">${escapeHtml(JSON.stringify(jobs.byStatus || {}))}</p>
+    </div>
+  </div>
+</body>
+</html>`;
+  }
+
+  generateCoverageMapHTML(data: any) {
+    const modules = data.modules || [];
+    const nodes = modules
+      .map((module: any) => {
+        const fns = (module.functions || [])
+          .map(
+            (func: any) =>
+              `<div class="file">${escapeHtml(func.name)} ` +
+              `<span class="badge">${escapeHtml(func.status)}</span></div>`
+          )
+          .join("");
+        return `<div class="module"><strong>${escapeHtml(module.name)}</strong> ` +
+          `(${escapeHtml(module.coverage)}%)${fns}</div>`;
+      })
+      .join("");
+
+    return `<!DOCTYPE html>
+<html>
+<head><meta charset="UTF-8"><title>Spec Coverage Map</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 2rem; }
+  .module { margin-bottom: 1rem; padding: 0.75rem; background: #fff; border: 1px solid #ddd; }
+  .file { margin-left: 1rem; }
+  .badge { font-size: 0.75rem; padding: 0.1rem 0.4rem; background: #eef; }
+</style>
 </head>
 <body>
   <h1>Spec Coverage Map</h1>
-  
-  <div class="filters">
-    <div class="filter-group">
-      <label>Author</label>
-      <select id="author-filter">
-        <option value="">All Authors</option>
-        <option value="alice">Alice</option>
-        <option value="bob">Bob</option>
-        <option value="charlie">Charlie</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <label>Team</label>
-      <select id="team-filter">
-        <option value="">All Teams</option>
-        <option value="backend">Backend</option>
-        <option value="frontend">Frontend</option>
-        <option value="security">Security</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <label>Module</label>
-      <select id="module-filter">
-        <option value="">All Modules</option>
-        <option value="auth">Auth</option>
-        <option value="payment">Payment</option>
-        <option value="user">User</option>
-      </select>
-    </div>
-    <div class="filter-group">
-      <label>Date Range</label>
-      <select id="date-filter">
-        <option value="all">All Time</option>
-        <option value="7d">Last 7 Days</option>
-        <option value="30d">Last 30 Days</option>
-        <option value="90d">Last 90 Days</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="coverage-tree">
-    ${this.generateTreeNodes(data.modules)}
-  </div>
-
-  <script>
-    // Filter functionality
-    document.querySelectorAll('select').forEach(select => {
-      select.addEventListener('change', filterTree);
-    });
-
-    function filterTree() {
-      const author = document.getElementById('author-filter').value;
-      const team = document.getElementById('team-filter').value;
-      const module = document.getElementById('module-filter').value;
-      const dateRange = document.getElementById('date-filter').value;
-      
-      // Apply filters to tree nodes
-      document.querySelectorAll('.tree-node').forEach(node => {
-        let show = true;
-        
-        if (author && node.dataset.author !== author) show = false;
-        if (team && node.dataset.team !== team) show = false;
-        if (module && node.dataset.module !== module) show = false;
-        
-        node.style.display = show ? 'block' : 'none';
-      });
-    }
-
-    // Click handlers for drill-down
-    document.querySelectorAll('.tree-node').forEach(node => {
-      node.addEventListener('click', function() {
-        if (this.classList.contains('file')) {
-          const functionName = this.dataset.function;
-          window.open(\`/audit/\${functionName}\`, '_blank');
-        }
-      });
-    });
-  </script>
+  <p>Source: ${escapeHtml(data.source || "empty")}</p>
+  ${nodes || "<p>No coverage data under <code>.specsync/</code>.</p>"}
 </body>
 </html>`;
   }
 
-  generateTreeNodes(modules) {
-    let html = "";
+  generateDriftMonitorHTML(data: any) {
+    const timeline = data.timeline || [];
+    const rows = timeline
+      .map(
+        (event: any) =>
+          `<li><strong>${escapeHtml(event.functionName)}</strong> ` +
+          `(${escapeHtml(event.severity)}): ${escapeHtml(event.reason)} ` +
+          `<span>${escapeHtml(event.timestamp || "")}</span></li>`
+      )
+      .join("");
 
-    modules.forEach((module) => {
-      html += `<div class="tree-node folder" data-module="${module.name}">
-        <span>📁 ${module.name}</span>
-        <span class="status-badge" style="background: ${this.getCoverageColor(module.coverage)}; color: white;">
-          ${module.coverage}%
-        </span>
-      </div>`;
-
-      module.functions.forEach((func) => {
-        html += `<div class="tree-node file" data-function="${func.name}" data-module="${module.name}">
-          <span>📄 ${func.name}</span>
-          <span class="status-badge status-${func.status}">${func.status}</span>
-        </div>`;
-      });
-    });
-
-    return html;
-  }
-
-  getCoverageColor(coverage) {
-    if (coverage >= 80) return "#28a745";
-    if (coverage >= 60) return "#ffc107";
-    return "#dc3545";
-  }
-
-  generateDriftMonitorHTML(data) {
-    return `
-<!DOCTYPE html>
+    return `<!DOCTYPE html>
 <html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Spec Drift Monitor</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-    .timeline { position: relative; padding: 20px 0; }
-    .timeline::before { content: ''; position: absolute; left: 20px; top: 0; bottom: 0; width: 2px; background: #ddd; }
-    .timeline-item { position: relative; margin-bottom: 20px; padding-left: 60px; }
-    .timeline-item::before { content: ''; position: absolute; left: 12px; top: 8px; width: 16px; height: 16px; border-radius: 50%; background: #007bff; }
-    .timeline-item.high::before { background: #dc3545; }
-    .timeline-item.medium::before { background: #ffc107; }
-    .timeline-item.low::before { background: #28a745; }
-    .timeline-content { background: white; padding: 16px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
-    .severity-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
-    .severity-high { background: #f8d7da; color: #721c24; }
-    .severity-medium { background: #fff3cd; color: #856404; }
-    .severity-low { background: #d4edda; color: #155724; }
-    .filters { margin-bottom: 20px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-    .summary { margin-bottom: 20px; padding: 16px; background: #e9ecef; border-radius: 8px; }
-  </style>
+<head><meta charset="UTF-8"><title>Spec Drift Monitor</title>
+<style>body { font-family: system-ui, sans-serif; margin: 2rem; }</style>
 </head>
 <body>
   <h1>Spec Drift Monitor</h1>
-  
-  <div class="summary">
-    <h3>Summary</h3>
-    <p>Total Drifts: ${data.summary.totalDrifts}</p>
-    <p>High Severity: ${data.summary.highSeverity}</p>
-    <p>Medium Severity: ${data.summary.mediumSeverity}</p>
-    <p>Low Severity: ${data.summary.lowSeverity}</p>
-    <p>Resolved: ${data.summary.resolved}</p>
-    <p>Pending: ${data.summary.pending}</p>
-  </div>
-
-  <div class="filters">
-    <label>Severity:</label>
-    <select id="severity-filter">
-      <option value="all">All Severities</option>
-      <option value="high">High</option>
-      <option value="medium">Medium</option>
-      <option value="low">Low</option>
-    </select>
-    
-    <label>Date Range:</label>
-    <select id="date-filter">
-      <option value="7d">Last 7 Days</option>
-      <option value="30d">Last 30 Days</option>
-      <option value="90d">Last 90 Days</option>
-      <option value="all">All Time</option>
-    </select>
-  </div>
-
-  <div class="timeline">
-    ${data.timeline
-      .map(
-        (item) => `
-      <div class="timeline-item ${item.severity}">
-        <div class="timeline-content">
-          <div style="display: flex; justify-content: space-between; align-items: center;">
-            <h4>${item.functionName}</h4>
-            <span class="severity-badge severity-${item.severity}">${item.severity.toUpperCase()}</span>
-          </div>
-          <p><strong>Module:</strong> ${item.module}</p>
-          <p><strong>Reason:</strong> ${item.reason}</p>
-          <p><strong>Author:</strong> ${item.author}</p>
-          <p><strong>Commit:</strong> <a href="https://github.com/company/repo/commit/${item.commit}" target="_blank">${item.commit}</a></p>
-          <p><strong>Time:</strong> ${new Date(item.timestamp).toLocaleString()}</p>
-        </div>
-      </div>
-    `
-      )
-      .join("")}
-  </div>
-
-  <script>
-    // Filter functionality
-    document.getElementById('severity-filter').addEventListener('change', filterTimeline);
-    document.getElementById('date-filter').addEventListener('change', filterTimeline);
-
-    function filterTimeline() {
-      const severity = document.getElementById('severity-filter').value;
-      const dateRange = document.getElementById('date-filter').value;
-      
-      document.querySelectorAll('.timeline-item').forEach(item => {
-        let show = true;
-        
-        if (severity !== 'all' && !item.classList.contains(severity)) {
-          show = false;
-        }
-        
-        if (show) {
-          const itemDate = new Date(item.querySelector('p:last-child').textContent.split(': ')[1]);
-          const now = new Date();
-          const daysDiff = (now - itemDate) / (1000 * 60 * 60 * 24);
-          
-          if (dateRange === '7d' && daysDiff > 7) show = false;
-          if (dateRange === '30d' && daysDiff > 30) show = false;
-          if (dateRange === '90d' && daysDiff > 90) show = false;
-        }
-        
-        item.style.display = show ? 'block' : 'none';
-      });
-    }
-  </script>
-</body>
-</html>`;
-  }
-
-  generateStoryLinkerHTML(data) {
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Story ↔ Spec Linker</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-    .story-card { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 20px; padding: 20px; }
-    .story-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-    .story-id { font-weight: bold; color: #007bff; }
-    .story-status { padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; }
-    .status-todo { background: #f8d7da; color: #721c24; }
-    .status-in-progress { background: #fff3cd; color: #856404; }
-    .status-done { background: #d4edda; color: #155724; }
-    .coverage-bar { background: #e9ecef; border-radius: 4px; height: 8px; margin: 8px 0; }
-    .coverage-fill { background: #28a745; height: 100%; border-radius: 4px; transition: width 0.3s; }
-    .spec-list { margin-top: 16px; }
-    .spec-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; background: #f8f9fa; border-radius: 4px; margin-bottom: 8px; }
-    .spec-status { padding: 2px 6px; border-radius: 8px; font-size: 10px; font-weight: bold; }
-    .status-verified { background: #d4edda; color: #155724; }
-    .status-missing { background: #f8d7da; color: #721c24; }
-    .add-mapping { margin-top: 16px; padding: 16px; background: #f8f9fa; border-radius: 8px; }
-  </style>
-</head>
-<body>
-  <h1>Story ↔ Spec Linker</h1>
-  
-  ${data.stories
-    .map(
-      (story) => `
-    <div class="story-card">
-      <div class="story-header">
-        <div>
-          <span class="story-id">${story.id}</span>
-          <h3>${story.title}</h3>
-        </div>
-        <span class="story-status status-${story.status.replace("-", "")}">${story.status.toUpperCase()}</span>
-      </div>
-      
-      <div>
-        <p><strong>Coverage:</strong> ${story.coverage}%</p>
-        <div class="coverage-bar">
-          <div class="coverage-fill" style="width: ${story.coverage}%"></div>
-        </div>
-        
-        ${story.driftWarnings > 0 ? `<p style="color: #dc3545;"><strong>⚠️ ${story.driftWarnings} drift warning(s)</strong></p>` : ""}
-        
-        <div class="spec-list">
-          <h4>Linked Specifications:</h4>
-          ${
-            story.specs.length > 0
-              ? story.specs
-                  .map(
-                    (spec) => `
-            <div class="spec-item">
-              <span>${spec.functionName} (${spec.theorem})</span>
-              <span class="spec-status status-${spec.status}">${spec.status}</span>
-            </div>
-          `
-                  )
-                  .join("")
-              : "<p>No specifications linked</p>"
-          }
-        </div>
-        
-        <div class="add-mapping">
-          <h4>Add Mapping</h4>
-          <form onsubmit="addMapping(event, '${story.id}')">
-            <input type="text" id="theorem-${story.id}" placeholder="Lean theorem name" required>
-            <button type="submit">Link Spec</button>
-          </form>
-        </div>
-      </div>
-    </div>
-  `
-    )
-    .join("")}
-
-  <script>
-    function addMapping(event, storyId) {
-      event.preventDefault();
-      const theorem = document.getElementById(\`theorem-\${storyId}\`).value;
-      
-      // In a real implementation, this would make an API call
-      console.log(\`Adding mapping: \${storyId} -> \${theorem}\`);
-      
-      // Add to the UI
-      const specList = event.target.closest('.story-card').querySelector('.spec-list');
-      const newSpec = document.createElement('div');
-      newSpec.className = 'spec-item';
-      newSpec.innerHTML = \`
-        <span>\${theorem}</span>
-        <span class="spec-status status-missing">pending</span>
-      \`;
-      specList.appendChild(newSpec);
-      
-      // Clear the input
-      event.target.reset();
-    }
-  </script>
-</body>
-</html>`;
-  }
-
-  generateAuditExplorerHTML(data) {
-    return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Audit Explorer - ${data.functionId}</title>
-  <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; margin: 0; padding: 20px; }
-    .audit-card { background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); margin-bottom: 20px; padding: 20px; }
-    .lineage-item { border-left: 3px solid #007bff; padding-left: 16px; margin-bottom: 16px; }
-    .lineage-item.verified { border-left-color: #28a745; }
-    .lineage-item.failed { border-left-color: #dc3545; }
-    .metadata { background: #f8f9fa; padding: 16px; border-radius: 8px; margin-top: 20px; }
-    .artifact-list { margin-top: 16px; }
-    .artifact-item { display: flex; justify-content: space-between; align-items: center; padding: 8px; background: white; border-radius: 4px; margin-bottom: 8px; }
-    .download-btn { background: #007bff; color: white; padding: 6px 12px; border: none; border-radius: 4px; cursor: pointer; text-decoration: none; }
-    .download-btn:hover { background: #0056b3; }
-  </style>
-</head>
-<body>
-  <h1>Audit Explorer - ${data.functionId}</h1>
-  
-  <div class="audit-card">
-    <h2>Proof Lineage</h2>
-    ${data.lineage
-      .map(
-        (item) => `
-      <div class="lineage-item ${item.status}">
-        <h3>${item.theorem}</h3>
-        <p><strong>Author:</strong> ${item.author}</p>
-        <p><strong>Commit:</strong> <a href="https://github.com/company/repo/commit/${item.commit}" target="_blank">${item.commit}</a></p>
-        <p><strong>Timestamp:</strong> ${new Date(item.timestamp).toLocaleString()}</p>
-        <p><strong>Proof Hash:</strong> <code>${item.proofHash}</code></p>
-        <p><strong>Status:</strong> <span class="status-${item.status}">${item.status}</span></p>
-        <a href="${item.downloadUrl}" class="download-btn">Download Proof</a>
-      </div>
-    `
-      )
-      .join("")}
-  </div>
-  
-  <div class="audit-card">
-    <h2>Metadata</h2>
-    <div class="metadata">
-      <p><strong>Sigstore Signature:</strong> <code>${data.metadata.sigstoreSignature}</code></p>
-      <p><strong>Verification Timestamp:</strong> ${new Date(data.metadata.verificationTimestamp).toLocaleString()}</p>
-      
-      <h3>Proof Artifacts</h3>
-      <div class="artifact-list">
-        ${data.metadata.proofArtifacts
-          .map(
-            (artifact) => `
-          <div class="artifact-item">
-            <span>${artifact.name} (${artifact.size})</span>
-            <div>
-              <code>${artifact.hash}</code>
-              <a href="/download/artifact/${artifact.name}" class="download-btn">Download</a>
-            </div>
-          </div>
-        `
-          )
-          .join("")}
-      </div>
-    </div>
-  </div>
-
-  <script>
-    // Verify Sigstore signature
-    async function verifySignature() {
-      try {
-        const response = await fetch('/api/verify-signature', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            signature: '${data.metadata.sigstoreSignature}',
-            artifacts: ${JSON.stringify(data.metadata.proofArtifacts)}
-          })
-        });
-        
-        const result = await response.json();
-        if (result.verified) {
-          console.log('✅ Signature verified locally');
-        } else {
-          console.log('❌ Signature verification failed');
-        }
-      } catch (error) {
-        console.error('Error verifying signature:', error);
-      }
-    }
-    
-    // Auto-verify on page load
-    verifySignature();
-  </script>
+  <p>Source: ${escapeHtml(data.source || "empty")}</p>
+  <ul>${rows || "<li>No drift events under <code>.specsync/drift_events.json</code>.</li>"}</ul>
 </body>
 </html>`;
   }
 }
+
+(WebDashboard as any).escapeHtml = escapeHtml;
