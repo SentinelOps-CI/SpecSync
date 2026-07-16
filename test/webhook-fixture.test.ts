@@ -9,11 +9,14 @@ describe("Webhook fixtures", () => {
     );
     const payload = JSON.parse(raw) as {
       action: string;
-      pull_request: { number: number; head: { sha: string } };
+      installation: { id: number };
+      pull_request: { number: number; head: { sha: string; ref: string } };
       repository: { full_name: string };
     };
     expect(payload.action).toBe("opened");
+    expect(payload.installation.id).toBe(99);
     expect(payload.pull_request.number).toBe(42);
+    expect(payload.pull_request.head.ref).toBe("feature/specs");
     expect(payload.repository.full_name).toBe("acme/demo-repo");
   });
 });

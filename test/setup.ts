@@ -20,6 +20,9 @@ jest.mock("fs-extra", () => ({
   copy: jest.fn(),
   move: jest.fn(),
   remove: jest.fn(),
+  pathExists: jest.fn().mockResolvedValue(false),
+  readJson: jest.fn().mockResolvedValue({}),
+  readdir: jest.fn().mockResolvedValue([]),
 }));
 
 // Mock simple-git to avoid git operations in tests

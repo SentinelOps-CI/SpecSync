@@ -1,5 +1,6 @@
 {
   "action": "opened",
+  "installation": { "id": 99 },
   "repository": {
     "name": "demo-repo",
     "full_name": "acme/demo-repo",
@@ -8,6 +9,7 @@
   "pull_request": {
     "number": 42,
     "html_url": "https://github.com/acme/demo-repo/pull/42",
-    "head": { "sha": "deadbeef" }
+    "head": { "sha": "deadbeefcafebabe0123456789abcdef01234567", "ref": "feature/specs" },
+    "base": { "ref": "main" }
   }
 }
