@@ -36,5 +36,54 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test
-        run: npm test
+      - name: Test with coverage gate
+        run: npm run test:coverage
+
+      - name: Production dependency audit
+        run: npm audit --omit=dev --audit-level=high
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t specsync:ci .
+
+      - name: Smoke — image has compiled entrypoint
+        run: |
+          docker run --rm --entrypoint node specsync:ci -e "require('fs').accessSync('dist/index.js')"
+
+  vscode-extension:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: vscode-extension
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: vscode-extension/package-lock.json
+
+      - name: Install extension deps
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Compile extension
+        run: npm run compile

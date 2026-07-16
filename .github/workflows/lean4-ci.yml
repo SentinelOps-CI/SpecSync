@@ -6,6 +6,7 @@ on:
       - "specs/**"
       - "lakefile.lean"
       - "lean-toolchain"
+      - "src/lean4-generator.ts"
       - ".github/workflows/lean4-ci.yml"
   push:
     branches: [main, master]
@@ -13,6 +14,7 @@ on:
       - "specs/**"
       - "lakefile.lean"
       - "lean-toolchain"
+      - "src/lean4-generator.ts"
 
 jobs:
   lean4-specs:
@@ -30,6 +32,44 @@ jobs:
         with:
           auto-config: "true"
           test: "false"
+
+      - name: Report sorry count
+        env:
+          # Fail the job only when SPECSYNC_PROOF_GATE=strict (repo variable or secret).
+          SPECSYNC_PROOF_GATE: ${{ vars.SPECSYNC_PROOF_GATE || 'soft' }}
+        run: |
+          set -euo pipefail
+          if [ ! -d specs ]; then
+            echo "No specs/ directory — nothing to report"
+            exit 0
+          fi
+          # Count sorry tokens outside comments (block /- -/ and line --).
+          # Note: avoid embedding nested /- -/ examples inside docs (breaks strip).
+          TOTAL=$(python3 - <<'PY'
+import re, pathlib
+text = ""
+for p in pathlib.Path("specs").rglob("*.lean"):
+    text += p.read_text(encoding="utf-8", errors="ignore") + "\n"
+# Remove block comments iteratively so nested markers in docs do not leak tokens.
+prev = None
+while prev != text:
+    prev = text
+    text = re.sub(r"/-.*?-/", " ", text, count=1, flags=re.S)
+stripped = re.sub(r"--[^\n]*", " ", text)
+print(len(re.findall(r"(?:^|[^A-Za-z0-9_])sorry(?=[^A-Za-z0-9_]|$)", stripped)))
+PY
+)
+          TOTAL=${TOTAL:-0}
+          echo "SpecSync Lean sorry count: ${TOTAL}"
+          echo "sorry_count=${TOTAL}" >> "$GITHUB_STEP_SUMMARY"
+          echo "### SpecSync Lean \`sorry\` report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "Found **${TOTAL}** \`sorry\` occurrence(s) under \`specs/\`." >> "$GITHUB_STEP_SUMMARY"
+          echo "Gate: \`SPECSYNC_PROOF_GATE=${SPECSYNC_PROOF_GATE}\` (fail only when \`strict\`)." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$SPECSYNC_PROOF_GATE" = "strict" ] && [ "$TOTAL" -gt 0 ]; then
+            echo "SPECSYNC_PROOF_GATE=strict and sorry found — failing"
+            exit 1
+          fi
 
       - name: Comment on PR with build summary
         if: github.event_name == 'pull_request' && success()
