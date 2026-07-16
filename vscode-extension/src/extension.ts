@@ -1,488 +1,423 @@
-import * as vscode from 'vscode';
-import * as fs from 'fs';
-import * as path from 'path';
+import * as vscode from "vscode";
+import { ProofRunner } from "./proof-runner";
+import {
+  getSpecForFunction,
+  listSpecs,
+  normalizeConfidence,
+  relativeSourcePath,
+  saveSpec,
+  workspaceRootFor,
+  type SpecViewModel,
+} from "./spec-reader";
+import {
+  SpecSuggestionProvider,
+  addSuggestionToActiveEditor,
+  analyzeTextChange,
+} from "./suggestion-panel";
 
-export function activate(context: vscode.ExtensionContext) {
+let proofRunner: ProofRunner | undefined;
+let suggestionProvider: SpecSuggestionProvider | undefined;
+
+export function activate(context: vscode.ExtensionContext): void {
+  proofRunner = new ProofRunner();
+  suggestionProvider = new SpecSuggestionProvider();
+
   const specLensProvider = new SpecLensProvider();
   const specHoverProvider = new SpecHoverProvider();
-  
-  context.subscriptions.push(
-    vscode.languages.registerCodeLensProvider(
-      { scheme: 'file', language: 'javascript' },
-      specLensProvider
-    ),
-    vscode.languages.registerCodeLensProvider(
-      { scheme: 'file', language: 'typescript' },
-      specLensProvider
-    ),
-    vscode.languages.registerHoverProvider(
-      { scheme: 'file', language: 'javascript' },
-      specHoverProvider
-    ),
-    vscode.languages.registerHoverProvider(
-      { scheme: 'file', language: 'typescript' },
-      specHoverProvider
-    )
-  );
+  const languageSelector: vscode.DocumentSelector = [
+    { scheme: "file", language: "javascript" },
+    { scheme: "file", language: "typescript" },
+    { scheme: "file", language: "typescriptreact" },
+    { scheme: "file", language: "javascriptreact" },
+    { scheme: "file", language: "python" },
+  ];
 
-  // Register commands
   context.subscriptions.push(
-    vscode.commands.registerCommand('specsync.showSpec', showSpecification),
-    vscode.commands.registerCommand('specsync.editSpec', editSpecification),
-    vscode.commands.registerCommand('specsync.runProof', runLeanProof)
+    proofRunner,
+    vscode.window.registerTreeDataProvider("specsync.suggestions", suggestionProvider),
+    vscode.languages.registerCodeLensProvider(languageSelector, specLensProvider),
+    vscode.languages.registerHoverProvider(languageSelector, specHoverProvider),
+    vscode.commands.registerCommand("specsync.showSpec", showSpecification),
+    vscode.commands.registerCommand("specsync.editSpec", editSpecification),
+    vscode.commands.registerCommand("specsync.runProof", () => proofRunner?.run()),
+    vscode.commands.registerCommand("specsync.cancelProof", () => proofRunner?.cancel()),
+    vscode.commands.registerCommand("specsync.addSuggestion", addSuggestionToActiveEditor),
+    vscode.commands.registerCommand("specsync.refreshSpecs", () => {
+      specLensProvider.refresh();
+      vscode.window.showInformationMessage("SpecSync: refreshed specs from .specsync/");
+    }),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (!suggestionProvider) {
+        return;
+      }
+      for (const change of event.contentChanges) {
+        const suggestions = analyzeTextChange(
+          change.text,
+          change.range.start,
+          event.document
+        );
+        if (suggestions.length > 0) {
+          suggestionProvider.updateSuggestions(suggestions);
+        }
+      }
+    })
   );
 }
 
+export function deactivate(): void {
+  proofRunner = undefined;
+  suggestionProvider = undefined;
+}
+
 class SpecLensProvider implements vscode.CodeLensProvider {
-  async provideCodeLenses(document: vscode.TextDocument): Promise<vscode.CodeLens[]> {
+  private readonly _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
+  readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
+
+  refresh(): void {
+    this._onDidChangeCodeLenses.fire();
+  }
+
+  provideCodeLenses(document: vscode.TextDocument): vscode.CodeLens[] {
     const codeLenses: vscode.CodeLens[] = [];
-    const functions = this.findFunctions(document);
-    
-    for (const func of functions) {
-      const spec = await this.getSpecForFunction(func.name, document.fileName);
-      if (spec) {
-        const range = new vscode.Range(func.line, 0, func.line, 0);
-        
-        // Confidence transparency (Prompt 5.2)
-        const confidenceEmoji = spec.confidence >= 0.8 ? '🟢' : spec.confidence >= 0.6 ? '🟡' : '🔴';
-        const confidenceText = spec.confidence >= 0.8 ? 'High' : spec.confidence >= 0.6 ? 'Medium' : 'Low';
-        
-        codeLenses.push(
-          new vscode.CodeLens(range, {
-            title: `🔍 Spec: [${spec.invariants[0] || 'No invariant'}] ${confidenceEmoji} ${confidenceText}`,
-            command: 'specsync.showSpec',
-            arguments: [func.name, spec]
-          })
-        );
+    for (const func of findFunctions(document)) {
+      const spec = getSpecForFunction(func.name, document.fileName);
+      if (!spec) {
+        continue;
       }
+      const range = new vscode.Range(func.line, 0, func.line, 0);
+      const confidence = normalizeConfidence(spec.confidence, 0);
+      const confidenceEmoji = confidence >= 0.8 ? "🟢" : confidence >= 0.6 ? "🟡" : "🔴";
+      const confidenceText =
+        confidence >= 0.8 ? "High" : confidence >= 0.6 ? "Medium" : "Low";
+      const invariant = spec.invariants[0] || "No invariant";
+
+      codeLenses.push(
+        new vscode.CodeLens(range, {
+          title: `Spec: [${invariant}] ${confidenceEmoji} ${confidenceText}`,
+          command: "specsync.showSpec",
+          arguments: [func.name, spec],
+        })
+      );
     }
-    
     return codeLenses;
-  }
-
-  private findFunctions(document: vscode.TextDocument): Array<{name: string, line: number}> {
-    const functions: Array<{name: string, line: number}> = [];
-    const text = document.getText();
-    const lines = text.split('\n');
-    
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      const functionMatch = line.match(/function\s+(\w+)\s*\(/);
-      if (functionMatch) {
-        functions.push({
-          name: functionMatch[1],
-          line: i
-        });
-      }
-    }
-    
-    return functions;
-  }
-
-  private async getSpecForFunction(functionName: string, filePath: string): Promise<any> {
-    const config = vscode.workspace.getConfiguration('specsync');
-    const cachePath = config.get('specCachePath', '.specsync/spec.json');
-    const confidenceThreshold = config.get('confidenceThreshold', 0.7);
-    
-    try {
-      const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
-      if (!workspaceFolder) return null;
-      
-      const fullCachePath = path.join(workspaceFolder.uri.fsPath, cachePath);
-      if (!fs.existsSync(fullCachePath)) return null;
-      
-      const cacheContent = fs.readFileSync(fullCachePath, 'utf8');
-      const cache = JSON.parse(cacheContent);
-      
-      const key = `${workspaceFolder.name}:${functionName}`;
-      const spec = cache[key] || null;
-      
-      // Filter by confidence threshold
-      if (spec && spec.confidence < confidenceThreshold) {
-        return null;
-      }
-      
-      return spec;
-    } catch (error) {
-      console.error('Error reading spec cache:', error);
-      return null;
-    }
   }
 }
 
 class SpecHoverProvider implements vscode.HoverProvider {
-  provideHover(document: vscode.TextDocument, position: vscode.Position): vscode.ProviderResult<vscode.Hover> {
-    const functionName = this.getFunctionAtPosition(document, position);
-    if (!functionName) return null;
-    
-    return this.getSpecHover(functionName, document.fileName);
-  }
-
-  private getFunctionAtPosition(document: vscode.TextDocument, position: vscode.Position): string | null {
-    const line = document.lineAt(position.line);
-    const functionMatch = line.text.match(/function\s+(\w+)\s*\(/);
-    return functionMatch ? functionMatch[1] : null;
-  }
-
-  private async getSpecHover(functionName: string, filePath: string): Promise<vscode.Hover> {
-    const spec = await this.getSpecForFunction(functionName, filePath);
-    if (!spec) return null;
-    
-    const content = new vscode.MarkdownString();
-    
-    // Confidence transparency (Prompt 5.2)
-    const confidenceEmoji = spec.confidence >= 0.8 ? '🟢' : spec.confidence >= 0.6 ? '🟡' : '🔴';
-    const confidenceText = spec.confidence >= 0.8 ? 'High' : spec.confidence >= 0.6 ? 'Medium' : 'Low';
-    
-    content.appendMarkdown(`## Specification for `${functionName}```);
-    content.appendMarkdown(`\n\n**Confidence:** ${confidenceEmoji} ${confidenceText} (${Math.round(spec.confidence * 100)}%)``);
-    
-    if (spec.preconditions.length > 0) {
-      content.appendMarkdown(`\n\n### Preconditions\n`);
-      spec.preconditions.forEach(pre => {
-        content.appendMarkdown(`- ${pre}\n`);
-      });
-    }
-    
-    if (spec.postconditions.length > 0) {
-      content.appendMarkdown(`\n\n### Postconditions\n`);
-      spec.postconditions.forEach(post => {
-        content.appendMarkdown(`- ${post}\n`);
-      });
-    }
-    
-    if (spec.invariants.length > 0) {
-      content.appendMarkdown(`\n\n### Invariants\n`);
-      spec.invariants.forEach(inv => {
-        content.appendMarkdown(`- ${inv}\n`);
-      });
-    }
-    
-    // Add reasoning if available
-    if (spec.reasoning) {
-      content.appendMarkdown(`\n\n### Reasoning\n`);
-      content.appendMarkdown(`${spec.reasoning}\n`);
-    }
-    
-    return new vscode.Hover(content);
-  }
-
-  private async getSpecForFunction(functionName: string, filePath: string): Promise<any> {
-    // Same implementation as SpecLensProvider
-    const config = vscode.workspace.getConfiguration('specsync');
-    const cachePath = config.get('specCachePath', '.specsync/spec.json');
-    const confidenceThreshold = config.get('confidenceThreshold', 0.7);
-    
-    try {
-      const workspaceFolder = vscode.workspace.getWorkspaceFolder(vscode.Uri.file(filePath));
-      if (!workspaceFolder) return null;
-      
-      const fullCachePath = path.join(workspaceFolder.uri.fsPath, cachePath);
-      if (!fs.existsSync(fullCachePath)) return null;
-      
-      const cacheContent = fs.readFileSync(fullCachePath, 'utf8');
-      const cache = JSON.parse(cacheContent);
-      
-      const key = `${workspaceFolder.name}:${functionName}`;
-      const spec = cache[key] || null;
-      
-      // Filter by confidence threshold
-      if (spec && spec.confidence < confidenceThreshold) {
-        return null;
-      }
-      
-      return spec;
-    } catch (error) {
-      console.error('Error reading spec cache:', error);
+  provideHover(
+    document: vscode.TextDocument,
+    position: vscode.Position
+  ): vscode.ProviderResult<vscode.Hover> {
+    const functionName = getFunctionAtLine(document, position.line);
+    if (!functionName) {
       return null;
     }
-  }
-}
 
-async function showSpecification(functionName: string, spec: any) {
-  const panel = vscode.window.createWebviewPanel(
-    'specSyncSpec',
-    `Specification: ${functionName}`,
-    vscode.ViewColumn.One,
-    {
-      enableScripts: true,
-      retainContextWhenHidden: true
+    const spec = getSpecForFunction(functionName, document.fileName);
+    if (!spec) {
+      return null;
     }
-  );
-  
-  panel.webview.html = generateSpecViewHTML(spec);
-}
 
-async function editSpecification(functionName: string) {
-  const spec = await getSpecForFunction(functionName);
-  if (!spec) {
-    vscode.window.showErrorMessage(`No specification found for ${functionName}`);
-    return;
-  }
-  
-  const panel = vscode.window.createWebviewPanel(
-    'specSyncEdit',
-    `Edit Specification: ${functionName}`,
-    vscode.ViewColumn.One,
-    {
-      enableScripts: true,
-      retainContextWhenHidden: true
+    const confidence = normalizeConfidence(spec.confidence, 0);
+    const confidenceEmoji = confidence >= 0.8 ? "🟢" : confidence >= 0.6 ? "🟡" : "🔴";
+    const confidenceText =
+      confidence >= 0.8 ? "High" : confidence >= 0.6 ? "Medium" : "Low";
+
+    const content = new vscode.MarkdownString();
+    content.appendMarkdown(`## Specification for \`${functionName}\`\n\n`);
+    content.appendMarkdown(
+      `**Confidence:** ${confidenceEmoji} ${confidenceText} (${Math.round(confidence * 100)}%)\n`
+    );
+
+    if (spec.preconditions.length > 0) {
+      content.appendMarkdown(`\n### Preconditions\n`);
+      for (const pre of spec.preconditions) {
+        content.appendMarkdown(`- ${pre}\n`);
+      }
     }
-  );
-  
-  panel.webview.html = generateSpecEditHTML(functionName, spec);
+    if (spec.postconditions.length > 0) {
+      content.appendMarkdown(`\n### Postconditions\n`);
+      for (const post of spec.postconditions) {
+        content.appendMarkdown(`- ${post}\n`);
+      }
+    }
+    if (spec.invariants.length > 0) {
+      content.appendMarkdown(`\n### Invariants\n`);
+      for (const inv of spec.invariants) {
+        content.appendMarkdown(`- ${inv}\n`);
+      }
+    }
+    if (spec.reasoning) {
+      content.appendMarkdown(`\n### Reasoning\n${spec.reasoning}\n`);
+    }
+
+    return new vscode.Hover(content);
+  }
 }
 
-async function runLeanProof() {
-  const config = vscode.workspace.getConfiguration('specsync');
-  const leanPath = config.get('leanPath', 'lean');
-  
-  const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-  if (!workspaceFolder) {
-    vscode.window.showErrorMessage('No workspace folder found');
+function findFunctions(
+  document: vscode.TextDocument
+): Array<{ name: string; line: number }> {
+  const functions: Array<{ name: string; line: number }> = [];
+  const text = document.getText();
+  const lines = text.split(/\r?\n/);
+
+  for (let i = 0; i < lines.length; i++) {
+    const name = matchFunctionName(lines[i]);
+    if (name) {
+      functions.push({ name, line: i });
+    }
+  }
+  return functions;
+}
+
+function getFunctionAtLine(document: vscode.TextDocument, line: number): string | null {
+  return matchFunctionName(document.lineAt(line).text);
+}
+
+function matchFunctionName(line: string): string | null {
+  const patterns = [
+    /(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/,
+    /(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s*)?\(/,
+    /def\s+(\w+)\s*\(/,
+  ];
+  for (const pattern of patterns) {
+    const match = line.match(pattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return null;
+}
+
+async function resolveSpec(
+  functionName?: string,
+  spec?: SpecViewModel
+): Promise<{ functionName: string; spec: SpecViewModel } | null> {
+  if (functionName && spec) {
+    return { functionName, spec };
+  }
+
+  const editor = vscode.window.activeTextEditor;
+  if (!editor) {
+    vscode.window.showErrorMessage("No active editor");
+    return null;
+  }
+
+  const name =
+    functionName ||
+    getFunctionAtLine(editor.document, editor.selection.active.line) ||
+    (await pickFunctionFromSpecs(editor.document.fileName));
+
+  if (!name) {
+    vscode.window.showErrorMessage("No function selected");
+    return null;
+  }
+
+  const resolved =
+    spec ||
+    getSpecForFunction(name, editor.document.fileName, { respectThreshold: false });
+  if (!resolved) {
+    vscode.window.showErrorMessage(`No specification found for ${name} in .specsync/specs/`);
+    return null;
+  }
+
+  return { functionName: name, spec: resolved };
+}
+
+async function pickFunctionFromSpecs(sourceFilePath: string): Promise<string | undefined> {
+  const root = workspaceRootFor(sourceFilePath);
+  if (!root) {
+    return undefined;
+  }
+  const specs = listSpecs(root);
+  if (specs.length === 0) {
+    return undefined;
+  }
+  const picked = await vscode.window.showQuickPick(
+    specs.map((s) => ({
+      label: s.functionName,
+      description: s.filePath,
+      detail: `${Math.round(normalizeConfidence(s.confidence, 0) * 100)}% confidence`,
+    })),
+    { placeHolder: "Select a function with a stored spec" }
+  );
+  return picked?.label;
+}
+
+async function showSpecification(functionName?: string, spec?: SpecViewModel): Promise<void> {
+  const resolved = await resolveSpec(functionName, spec);
+  if (!resolved) {
     return;
   }
-  
-  const specsDir = path.join(workspaceFolder.uri.fsPath, 'specs');
-  if (!fs.existsSync(specsDir)) {
-    vscode.window.showErrorMessage('No specs directory found');
+
+  const panel = vscode.window.createWebviewPanel(
+    "specSyncSpec",
+    `Specification: ${resolved.functionName}`,
+    vscode.ViewColumn.Beside,
+    { enableScripts: false, retainContextWhenHidden: true }
+  );
+  panel.webview.html = generateSpecViewHTML(resolved.spec);
+}
+
+async function editSpecification(functionName?: string, spec?: SpecViewModel): Promise<void> {
+  const resolved = await resolveSpec(functionName, spec);
+  if (!resolved) {
     return;
   }
-  
-  const progressOptions = {
-    location: vscode.ProgressLocation.Notification,
-    title: 'Running Lean Proofs',
-    cancellable: true
-  };
-  
-  await vscode.window.withProgress(progressOptions, async (progress, token) => {
+
+  const panel = vscode.window.createWebviewPanel(
+    "specSyncEdit",
+    `Edit Specification: ${resolved.functionName}`,
+    vscode.ViewColumn.Beside,
+    { enableScripts: true, retainContextWhenHidden: true }
+  );
+
+  const working: SpecViewModel = { ...resolved.spec };
+  if (!working.filePath) {
+    const editor = vscode.window.activeTextEditor;
+    const root = editor && workspaceRootFor(editor.document.fileName);
+    if (editor && root) {
+      working.filePath = relativeSourcePath(root, editor.document.fileName);
+    }
+  }
+
+  panel.webview.html = generateSpecEditHTML(resolved.functionName, working);
+
+  panel.webview.onDidReceiveMessage(async (message) => {
+    if (message?.command !== "saveSpec" || !message.data) {
+      return;
+    }
     try {
-      progress.report({ message: 'Initializing Lean environment...' });
-      
-      let successCount = 0;
-      let totalCount = 0;
-      const results: any[] = [];
-      
-      const leanFiles = fs.readdirSync(specsDir).filter(f => f.endsWith('.lean'));
-      totalCount = leanFiles.length;
-      
-      for (const file of leanFiles) {
-        if (token.isCancellationRequested) {
-          vscode.window.showInformationMessage('Proof execution cancelled');
-          break;
-        }
-        
-        const filePath = path.join(specsDir, file);
-        progress.report({ 
-          message: `Processing ${file}...`,
-          increment: 100 / totalCount
-        });
-        
-        try {
-          const result = await executeLeanFile(leanPath, filePath);
-          results.push({ file, success: result.success, output: result.output });
-          
-          if (result.success) {
-            successCount++;
-          }
-        } catch (error) {
-          results.push({ file, success: false, error: error.message });
-        }
-      }
-      
-      const coverage = Math.round((successCount / totalCount) * 100);
-      
-      // Show results with confidence transparency
-      const message = `Proof validation complete: ${successCount}/${totalCount} successful (${coverage}% coverage)`;
-      
-      if (coverage >= 70) {
-        vscode.window.showInformationMessage(message);
-      } else {
-        vscode.window.showWarningMessage(message + ' - Below threshold');
-      }
-      
-      // Generate artifacts
-      await generateProofArtifacts(results, workspaceFolder.uri.fsPath);
-      
+      const data = message.data as {
+        confidence: number;
+        preconditions: string[];
+        postconditions: string[];
+        invariants: string[];
+        reasoning: string;
+      };
+      working.confidence = normalizeConfidence(data.confidence, working.confidence);
+      working.preconditions = data.preconditions || [];
+      working.postconditions = data.postconditions || [];
+      working.invariants = data.invariants || [];
+      working.reasoning = data.reasoning || "";
+      const savedPath = saveSpec(working);
+      vscode.window.showInformationMessage(`Saved specification to ${savedPath}`);
+      panel.dispose();
     } catch (error) {
-      vscode.window.showErrorMessage(`Proof execution failed: ${error.message}`);
+      const errMessage = error instanceof Error ? error.message : String(error);
+      vscode.window.showErrorMessage(`Failed to save specification: ${errMessage}`);
     }
   });
 }
 
-function executeLeanFile(leanPath: string, filePath: string): Promise<{success: boolean, output: string}> {
-  return new Promise((resolve, reject) => {
-    const { exec } = require('child_process');
-    exec(`${leanPath} --json "${filePath}"`, { timeout: 30000 }, (error: any, stdout: string, stderr: string) => {
-      if (error) {
-        resolve({ success: false, output: stderr });
-      } else {
-        resolve({ success: true, output: stdout });
-      }
-    });
-  });
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
-async function generateProofArtifacts(results: any[], workspacePath: string) {
-  const artifactsDir = path.join(workspacePath, '.specsync', 'artifacts');
-  
-  // Ensure artifacts directory exists
-  if (!fs.existsSync(artifactsDir)) {
-    fs.mkdirSync(artifactsDir, { recursive: true });
-  }
-  
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const reportPath = path.join(artifactsDir, `proof-report-${timestamp}.json`);
-  
-  const report = {
-    timestamp: new Date().toISOString(),
-    totalFiles: results.length,
-    successfulProofs: results.filter(r => r.success).length,
-    failedProofs: results.filter(r => !r.success).length,
-    coverage: Math.round((results.filter(r => r.success).length / results.length) * 100),
-    results: results
-  };
-  
-  fs.writeFileSync(reportPath, JSON.stringify(report, null, 2));
-  
-  // Create a summary file
-  const summaryPath = path.join(artifactsDir, 'latest-report.json');
-  fs.writeFileSync(summaryPath, JSON.stringify(report, null, 2));
-  
-  vscode.window.showInformationMessage(`Proof artifacts saved to ${artifactsDir}`);
-}
+function generateSpecViewHTML(spec: SpecViewModel): string {
+  const confidence = normalizeConfidence(spec.confidence, 0);
+  const confidenceEmoji = confidence >= 0.8 ? "🟢" : confidence >= 0.6 ? "🟡" : "🔴";
+  const confidenceText =
+    confidence >= 0.8 ? "High" : confidence >= 0.6 ? "Medium" : "Low";
+  const confidenceColor =
+    confidence >= 0.8 ? "#28a745" : confidence >= 0.6 ? "#ffc107" : "#dc3545";
 
-function generateSpecViewHTML(spec: any): string {
-  // Confidence transparency (Prompt 5.2)
-  const confidenceEmoji = spec.confidence >= 0.8 ? '🟢' : spec.confidence >= 0.6 ? '🟡' : '🔴';
-  const confidenceText = spec.confidence >= 0.8 ? 'High' : spec.confidence >= 0.6 ? 'Medium' : 'Low';
-  const confidenceColor = spec.confidence >= 0.8 ? '#28a745' : spec.confidence >= 0.6 ? '#ffc107' : '#dc3545';
-  
-  return `
-<!DOCTYPE html>
+  const list = (items: string[]) =>
+    items.map((item) => `<div class="spec-item">${escapeHtml(item)}</div>`).join("") ||
+    "<div class=\"spec-item\">(none)</div>";
+
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>SpecSync Specification</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+    body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); }
     .spec-section { margin-bottom: 20px; }
-    .spec-section h3 { color: #0366d6; margin-bottom: 10px; }
-    .spec-item { background: #f6f8fa; padding: 8px; margin: 5px 0; border-radius: 4px; }
-    .confidence { color: ${confidenceColor}; font-weight: bold; }
-    .reasoning { background: #fff3cd; padding: 15px; border-radius: 4px; margin-top: 15px; }
+    .spec-section h3 { margin-bottom: 10px; }
+    .spec-item { background: var(--vscode-editor-inactiveSelectionBackground); padding: 8px; margin: 5px 0; border-radius: 4px; }
     .confidence-badge { display: inline-block; padding: 4px 8px; border-radius: 12px; font-size: 12px; font-weight: bold; background: ${confidenceColor}; color: white; }
+    .reasoning { background: var(--vscode-textBlockQuote-background); padding: 15px; border-radius: 4px; margin-top: 15px; }
   </style>
 </head>
 <body>
-  <h2>Specification Details</h2>
-  <div class="confidence">
-    <span class="confidence-badge">${confidenceEmoji} ${confidenceText} Confidence (${Math.round(spec.confidence * 100)}%)</span>
-  </div>
-  
-  <div class="spec-section">
-    <h3>Preconditions</h3>
-    ${spec.preconditions.map(pre => `<div class="spec-item">${pre}</div>`).join('')}
-  </div>
-  
-  <div class="spec-section">
-    <h3>Postconditions</h3>
-    ${spec.postconditions.map(post => `<div class="spec-item">${post}</div>`).join('')}
-  </div>
-  
-  <div class="spec-section">
-    <h3>Invariants</h3>
-    ${spec.invariants.map(inv => `<div class="spec-item">${inv}</div>`).join('')}
-  </div>
-  
-  <div class="reasoning">
-    <h3>Reasoning</h3>
-    <p>${spec.reasoning}</p>
-  </div>
+  <h2>Specification: ${escapeHtml(spec.functionName)}</h2>
+  <p><span class="confidence-badge">${confidenceEmoji} ${confidenceText} (${Math.round(confidence * 100)}%)</span></p>
+  <div class="spec-section"><h3>Preconditions</h3>${list(spec.preconditions)}</div>
+  <div class="spec-section"><h3>Postconditions</h3>${list(spec.postconditions)}</div>
+  <div class="spec-section"><h3>Invariants</h3>${list(spec.invariants)}</div>
+  <div class="reasoning"><h3>Reasoning</h3><p>${escapeHtml(spec.reasoning || "")}</p></div>
 </body>
-</html>
-`;
+</html>`;
 }
 
-function generateSpecEditHTML(functionName: string, spec: any): string {
-  return `
-<!DOCTYPE html>
+function generateSpecEditHTML(functionName: string, spec: SpecViewModel): string {
+  const confidencePct = Math.round(normalizeConfidence(spec.confidence, 0) * 100);
+  return `<!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Edit Specification</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; padding: 20px; }
+    body { font-family: var(--vscode-font-family); padding: 20px; color: var(--vscode-foreground); }
     .form-group { margin-bottom: 15px; }
     label { display: block; margin-bottom: 5px; font-weight: bold; }
-    textarea { width: 100%; min-height: 80px; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
-    button { background: #0366d6; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
-    button:hover { background: #0256b3; }
-    .confidence-slider { width: 100%; margin: 10px 0; }
+    textarea, input[type="range"] { width: 100%; }
+    textarea { min-height: 80px; padding: 8px; }
+    button { background: var(--vscode-button-background); color: var(--vscode-button-foreground); padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; }
   </style>
 </head>
 <body>
-  <h2>Edit Specification: ${functionName}</h2>
-  
+  <h2>Edit Specification: ${escapeHtml(functionName)}</h2>
   <form id="specForm">
     <div class="form-group">
-      <label>Confidence Level (${Math.round(spec.confidence * 100)}%)</label>
-      <input type="range" id="confidence" min="0" max="100" value="${Math.round(spec.confidence * 100)}" class="confidence-slider">
-      <span id="confidenceValue">${Math.round(spec.confidence * 100)}%</span>
+      <label>Confidence (<span id="confidenceValue">${confidencePct}</span>%)</label>
+      <input type="range" id="confidence" min="0" max="100" value="${confidencePct}">
     </div>
-    
     <div class="form-group">
-      <label>Preconditions (one per line):</label>
-      <textarea name="preconditions" id="preconditions">${spec.preconditions.join('\n')}</textarea>
+      <label>Preconditions (one per line)</label>
+      <textarea id="preconditions">${escapeHtml(spec.preconditions.join("\n"))}</textarea>
     </div>
-    
     <div class="form-group">
-      <label>Postconditions (one per line):</label>
-      <textarea name="postconditions" id="postconditions">${spec.postconditions.join('\n')}</textarea>
+      <label>Postconditions (one per line)</label>
+      <textarea id="postconditions">${escapeHtml(spec.postconditions.join("\n"))}</textarea>
     </div>
-    
     <div class="form-group">
-      <label>Invariants (one per line):</label>
-      <textarea name="invariants" id="invariants">${spec.invariants.join('\n')}</textarea>
+      <label>Invariants (one per line)</label>
+      <textarea id="invariants">${escapeHtml(spec.invariants.join("\n"))}</textarea>
     </div>
-    
     <div class="form-group">
-      <label>Reasoning:</label>
-      <textarea name="reasoning" id="reasoning">${spec.reasoning}</textarea>
+      <label>Reasoning</label>
+      <textarea id="reasoning">${escapeHtml(spec.reasoning || "")}</textarea>
     </div>
-    
     <button type="submit">Save Changes</button>
   </form>
-  
   <script>
-    // Update confidence display
-    document.getElementById('confidence').addEventListener('input', function() {
-      document.getElementById('confidenceValue').textContent = this.value + '%';
+    const vscode = acquireVsCodeApi();
+    document.getElementById('confidence').addEventListener('input', function () {
+      document.getElementById('confidenceValue').textContent = this.value;
     });
-    
-    document.getElementById('specForm').addEventListener('submit', function(e) {
+    document.getElementById('specForm').addEventListener('submit', function (e) {
       e.preventDefault();
-      
-      const formData = {
-        confidence: parseInt(document.getElementById('confidence').value) / 100,
-        preconditions: document.getElementById('preconditions').value.split('\n').filter(line => line.trim()),
-        postconditions: document.getElementById('postconditions').value.split('\n').filter(line => line.trim()),
-        invariants: document.getElementById('invariants').value.split('\n').filter(line => line.trim()),
-        reasoning: document.getElementById('reasoning').value
-      };
-      
-      // Send message to extension
       vscode.postMessage({
         command: 'saveSpec',
-        data: formData
+        data: {
+          confidence: parseInt(document.getElementById('confidence').value, 10) / 100,
+          preconditions: document.getElementById('preconditions').value.split('\\n').filter(function (l) { return l.trim(); }),
+          postconditions: document.getElementById('postconditions').value.split('\\n').filter(function (l) { return l.trim(); }),
+          invariants: document.getElementById('invariants').value.split('\\n').filter(function (l) { return l.trim(); }),
+          reasoning: document.getElementById('reasoning').value
+        }
       });
     });
   </script>
 </body>
-</html>
-`;
+</html>`;
 }
-
-export function deactivate() {}
