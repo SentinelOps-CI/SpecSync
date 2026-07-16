@@ -1,9 +1,12 @@
-// @ts-nocheck
 const fs = require("fs-extra");
 const path = require("path");
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 
 export class SpecCoverageTracker {
+  specsDir: any;
+  sourceDir: any;
+  coverageThreshold: any;
+  driftThreshold: any;
   constructor() {
     this.specsDir = process.env.SPECS_DIR || "./specs";
     this.sourceDir = process.env.SOURCE_DIR || "./src";
@@ -16,8 +19,18 @@ export class SpecCoverageTracker {
    * @param {Object} context - Analysis context
    * @returns {Object} Coverage analysis results
    */
-  async analyzeSpecCoverage(context) {
-    const results = {
+  async analyzeSpecCoverage(context: any) {
+    const results: {
+      totalFunctions: number;
+      coveredFunctions: number;
+      uncoveredFunctions: any[];
+      coveragePercentage: number;
+      specFiles: any[];
+      userStories: any[];
+      failedProofs: any[];
+      staleProofs: any[];
+      timestamp: string;
+    } = {
       totalFunctions: 0,
       coveredFunctions: 0,
       uncoveredFunctions: [],
@@ -41,7 +54,7 @@ export class SpecCoverageTracker {
       // Analyze coverage
       const coverage = await this.calculateCoverage(sourceFiles, specFiles);
       results.coveredFunctions = coverage.covered;
-      results.uncoveredFunctions = coverage.uncovered;
+      results.uncoveredFunctions = coverage.uncoveredFunctions;
       results.coveragePercentage = coverage.percentage;
 
       // Analyze user stories
@@ -51,7 +64,7 @@ export class SpecCoverageTracker {
       const proofAnalysis = await this.analyzeProofStatus(specFiles);
       results.failedProofs = proofAnalysis.failed;
       results.staleProofs = proofAnalysis.stale;
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Error analyzing spec coverage:", error);
     }
 
@@ -63,10 +76,10 @@ export class SpecCoverageTracker {
    * @returns {Array} Array of source file paths
    */
   async findSourceFiles() {
-    const sourceFiles = [];
+    const sourceFiles: string[] = [];
     const extensions = [".js", ".ts", ".py", ".java", ".rs", ".cpp", ".c"];
 
-    const walkDir = async (dir) => {
+    const walkDir = async (dir: string) => {
       const files = await fs.readdir(dir);
 
       for (const file of files) {
@@ -99,8 +112,8 @@ export class SpecCoverageTracker {
           specFiles.push(path.join(this.specsDir, file));
         }
       }
-    } catch (error) {
-      console.warn("Specs directory not found:", error.message);
+    } catch (error: unknown) {
+      console.warn("Specs directory not found:", (error instanceof Error ? error.message : String(error)));
     }
 
     return specFiles;
@@ -111,7 +124,7 @@ export class SpecCoverageTracker {
    * @param {Array} sourceFiles - Array of source file paths
    * @returns {number} Total function count
    */
-  async countFunctions(sourceFiles) {
+  async countFunctions(sourceFiles: any[]) {
     let totalFunctions = 0;
 
     for (const file of sourceFiles) {
@@ -119,8 +132,8 @@ export class SpecCoverageTracker {
         const content = await fs.readFile(file, "utf8");
         const functionCount = this.countFunctionsInFile(content, path.extname(file));
         totalFunctions += functionCount;
-      } catch (error) {
-        console.warn(`Error reading file ${file}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error reading file ${file}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -133,7 +146,7 @@ export class SpecCoverageTracker {
    * @param {string} extension - File extension
    * @returns {number} Function count
    */
-  countFunctionsInFile(content, extension) {
+  countFunctionsInFile(content: string, extension: string) {
     let count = 0;
 
     switch (extension) {
@@ -147,7 +160,7 @@ export class SpecCoverageTracker {
           /var\s+\w+\s*=\s*\(/g,
           /=>\s*{/g,
         ];
-        jsPatterns.forEach((pattern) => {
+        jsPatterns.forEach((pattern: any) => {
           const matches = content.match(pattern);
           if (matches) count += matches.length;
         });
@@ -156,7 +169,7 @@ export class SpecCoverageTracker {
       case ".py":
         // Python function patterns
         const pyPatterns = [/def\s+\w+\s*\(/g];
-        pyPatterns.forEach((pattern) => {
+        pyPatterns.forEach((pattern: any) => {
           const matches = content.match(pattern);
           if (matches) count += matches.length;
         });
@@ -165,7 +178,7 @@ export class SpecCoverageTracker {
       case ".java":
         // Java method patterns
         const javaPatterns = [/(public|private|protected)?\s*(static\s+)?\w+\s+\w+\s*\(/g];
-        javaPatterns.forEach((pattern) => {
+        javaPatterns.forEach((pattern: any) => {
           const matches = content.match(pattern);
           if (matches) count += matches.length;
         });
@@ -174,7 +187,7 @@ export class SpecCoverageTracker {
       case ".rs":
         // Rust function patterns
         const rustPatterns = [/fn\s+\w+\s*\(/g];
-        rustPatterns.forEach((pattern) => {
+        rustPatterns.forEach((pattern: any) => {
           const matches = content.match(pattern);
           if (matches) count += matches.length;
         });
@@ -190,7 +203,7 @@ export class SpecCoverageTracker {
    * @param {Array} specFiles - Spec file paths
    * @returns {Object} Coverage results
    */
-  async calculateCoverage(sourceFiles, specFiles) {
+  async calculateCoverage(sourceFiles: any[], specFiles: any[]) {
     const covered = [];
     const uncovered = [];
 
@@ -203,8 +216,8 @@ export class SpecCoverageTracker {
         if (functionName) {
           specFunctions.add(functionName);
         }
-      } catch (error) {
-        console.warn(`Error reading spec file ${specFile}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error reading spec file ${specFile}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -221,8 +234,8 @@ export class SpecCoverageTracker {
             uncovered.push({ function: func, file: sourceFile });
           }
         }
-      } catch (error) {
-        console.warn(`Error analyzing source file ${sourceFile}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error analyzing source file ${sourceFile}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -243,7 +256,7 @@ export class SpecCoverageTracker {
    * @param {string} content - Spec file content
    * @returns {string|null} Function name
    */
-  extractFunctionNameFromSpec(content) {
+  extractFunctionNameFromSpec(content: string) {
     const match = content.match(/-- Function: (\w+)/);
     return match ? match[1] : null;
   }
@@ -254,8 +267,8 @@ export class SpecCoverageTracker {
    * @param {string} extension - File extension
    * @returns {Array} Array of function names
    */
-  extractFunctionNames(content, extension) {
-    const functions = [];
+  extractFunctionNames(content: string, extension: string) {
+    const functions: any[] = [];
 
     switch (extension) {
       case ".js":
@@ -263,7 +276,7 @@ export class SpecCoverageTracker {
         // JavaScript/TypeScript function extraction
         const jsMatches = content.match(/function\s+(\w+)\s*\(/g);
         if (jsMatches) {
-          jsMatches.forEach((match) => {
+          jsMatches.forEach((match: any) => {
             const name = match.match(/function\s+(\w+)/)[1];
             functions.push(name);
           });
@@ -274,7 +287,7 @@ export class SpecCoverageTracker {
         // Python function extraction
         const pyMatches = content.match(/def\s+(\w+)\s*\(/g);
         if (pyMatches) {
-          pyMatches.forEach((match) => {
+          pyMatches.forEach((match: any) => {
             const name = match.match(/def\s+(\w+)/)[1];
             functions.push(name);
           });
@@ -301,11 +314,11 @@ export class SpecCoverageTracker {
           const content = await fs.readFile(file, "utf8");
           const stories = this.extractUserStories(content);
           userStories.push(...stories);
-        } catch (error) {
-          console.warn(`Error reading user story file ${file}:`, error.message);
+        } catch (error: unknown) {
+          console.warn(`Error reading user story file ${file}:`, (error instanceof Error ? error.message : String(error)));
         }
       }
-    } catch (error) {
+    } catch (error: unknown) {
       console.warn("No user story files found");
     }
 
@@ -324,7 +337,7 @@ export class SpecCoverageTracker {
       try {
         const files = await fs.glob(pattern);
         storyFiles.push(...files);
-      } catch (error) {
+      } catch (error: unknown) {
         // Pattern not found, continue
       }
     }
@@ -337,7 +350,7 @@ export class SpecCoverageTracker {
    * @param {string} content - File content
    * @returns {Array} Array of user stories
    */
-  extractUserStories(content) {
+  extractUserStories(content: string) {
     const stories = [];
     const storyPattern = /(?:As a|User story|Story):\s*(.+?)(?:\n|$)/gi;
 
@@ -358,7 +371,7 @@ export class SpecCoverageTracker {
    * @param {string} story - User story description
    * @returns {boolean} Has formal guarantee
    */
-  checkFormalGuarantee(story) {
+  checkFormalGuarantee(story: string) {
     const formalKeywords = [
       "proof",
       "theorem",
@@ -367,7 +380,7 @@ export class SpecCoverageTracker {
       "guarantee",
       "verification",
     ];
-    return formalKeywords.some((keyword) => story.toLowerCase().includes(keyword));
+    return formalKeywords.some((keyword: any) => story.toLowerCase().includes(keyword));
   }
 
   /**
@@ -375,7 +388,7 @@ export class SpecCoverageTracker {
    * @param {Array} specFiles - Array of spec file paths
    * @returns {Object} Proof analysis results
    */
-  async analyzeProofStatus(specFiles) {
+  async analyzeProofStatus(specFiles: any[]) {
     const failed = [];
     const stale = [];
 
@@ -387,8 +400,8 @@ export class SpecCoverageTracker {
         } else if (result.status === "stale") {
           stale.push({ file: specFile, lastModified: result.lastModified });
         }
-      } catch (error) {
-        console.warn(`Error checking proof status for ${specFile}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error checking proof status for ${specFile}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -400,7 +413,7 @@ export class SpecCoverageTracker {
    * @param {string} specFile - Spec file path
    * @returns {Object} Proof status
    */
-  async checkProofStatus(specFile) {
+  async checkProofStatus(specFile: string) {
     try {
       // Try to compile the Lean4 file
       const result = await this.compileLeanFile(specFile);
@@ -424,10 +437,10 @@ export class SpecCoverageTracker {
       }
 
       return { status: "valid" };
-    } catch (error) {
+    } catch (error: unknown) {
       return {
         status: "failed",
-        error: error.message,
+        error: (error instanceof Error ? error.message : String(error)),
       };
     }
   }
@@ -437,15 +450,13 @@ export class SpecCoverageTracker {
    * @param {string} specFile - Spec file path
    * @returns {Object} Compilation result
    */
-  async compileLeanFile(specFile) {
+  async compileLeanFile(specFile: string): Promise<{ success: boolean; error?: string; stdout?: string; stderr?: string }> {
     return new Promise((resolve) => {
-      const command = `lean --json ${specFile}`;
-
-      exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+      execFile("lean", ["--json", specFile], { timeout: 30000 }, (error: Error | null, stdout: string, stderr: string) => {
         if (error) {
           resolve({
             success: false,
-            error: error.message,
+            error: (error instanceof Error ? error.message : String(error)),
             stderr: stderr,
           });
         } else {
@@ -464,7 +475,7 @@ export class SpecCoverageTracker {
    * @param {Object} context - Analysis context
    * @returns {Array} Drift detection results
    */
-  async detectDrift(changedFunctions, context) {
+  async detectDrift(changedFunctions: any[], context: any) {
     const driftResults = [];
 
     for (const func of changedFunctions) {
@@ -473,8 +484,8 @@ export class SpecCoverageTracker {
         if (drift.hasDrift) {
           driftResults.push(drift);
         }
-      } catch (error) {
-        console.warn(`Error analyzing drift for ${func.functionName}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error analyzing drift for ${func.functionName}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -487,7 +498,7 @@ export class SpecCoverageTracker {
    * @param {Object} context - Analysis context
    * @returns {Object} Drift analysis result
    */
-  async analyzeFunctionDrift(functionData, context) {
+  async analyzeFunctionDrift(functionData: any, context: any) {
     const { functionName, functionBody, filePath } = functionData;
 
     // Find existing spec for this function
@@ -524,7 +535,7 @@ export class SpecCoverageTracker {
    * @param {string} functionName - Function name
    * @returns {Object|null} Existing spec
    */
-  async findExistingSpec(functionName) {
+  async findExistingSpec(functionName: string) {
     const specFiles = await this.findSpecFiles();
 
     for (const specFile of specFiles) {
@@ -533,8 +544,8 @@ export class SpecCoverageTracker {
         if (content.includes(`Function: ${functionName}`)) {
           return this.parseSpecFile(content);
         }
-      } catch (error) {
-        console.warn(`Error reading spec file ${specFile}:`, error.message);
+      } catch (error: unknown) {
+        console.warn(`Error reading spec file ${specFile}:`, (error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -546,13 +557,13 @@ export class SpecCoverageTracker {
    * @param {string} content - Spec file content
    * @returns {Object} Parsed spec
    */
-  parseSpecFile(content) {
+  parseSpecFile(content: string) {
     // Extract spec information from Lean4 file
     const spec = {
-      preconditions: [],
-      postconditions: [],
-      invariants: [],
-      edgeCases: [],
+      preconditions: [] as string[],
+      postconditions: [] as string[],
+      invariants: [] as string[],
+      edgeCases: [] as string[],
       confidence: 0,
     };
 
@@ -582,7 +593,7 @@ export class SpecCoverageTracker {
    * @param {string} predicateString - Predicate string
    * @returns {Array} Array of predicates
    */
-  parsePredicates(predicateString) {
+  parsePredicates(predicateString: string) {
     // Simplified predicate parsing
     const predicates = [];
     const parts = predicateString.split("∧");
@@ -602,7 +613,7 @@ export class SpecCoverageTracker {
    * @param {string} functionBody - Function body
    * @returns {Object} Implementation analysis
    */
-  async analyzeCurrentImplementation(functionBody) {
+  async analyzeCurrentImplementation(functionBody: string) {
     // This would use the same analysis as the spec generator
     // For now, return a simplified analysis
     return {
@@ -618,7 +629,7 @@ export class SpecCoverageTracker {
    * @param {string} functionBody - Function body
    * @returns {number} Complexity score
    */
-  calculateComplexity(functionBody) {
+  calculateComplexity(functionBody: string) {
     let complexity = 1;
 
     // Count conditionals
@@ -642,10 +653,10 @@ export class SpecCoverageTracker {
    * @param {Object} spec - Existing spec
    * @returns {Object} Comparison result
    */
-  compareWithSpec(current, spec) {
+  compareWithSpec(current: any, spec: any) {
     const drift = {
       hasDrift: false,
-      details: [],
+      details: [] as string[],
       confidence: 0,
     };
 
@@ -673,13 +684,13 @@ export class SpecCoverageTracker {
    * @param {Object} analysis - Coverage analysis results
    * @returns {Object} Coverage report
    */
-  generateCoverageReport(analysis) {
+  generateCoverageReport(analysis: any) {
     return {
       summary: {
         totalFunctions: analysis.totalFunctions,
         coveredFunctions: analysis.coveredFunctions,
         coveragePercentage: analysis.coveragePercentage,
-        userStoriesWithGuarantees: analysis.userStories.filter((s) => s.hasFormalGuarantee).length,
+        userStoriesWithGuarantees: analysis.userStories.filter((s: any) => s.hasFormalGuarantee).length,
         totalUserStories: analysis.userStories.length,
         failedProofs: analysis.failedProofs.length,
         staleProofs: analysis.staleProofs.length,
@@ -700,7 +711,7 @@ export class SpecCoverageTracker {
    * @param {Object} analysis - Coverage analysis results
    * @returns {Array} Array of recommendations
    */
-  generateRecommendations(analysis) {
+  generateRecommendations(analysis: any) {
     const recommendations = [];
 
     if (analysis.coveragePercentage < this.coverageThreshold) {

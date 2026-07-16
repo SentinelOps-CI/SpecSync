@@ -1,9 +1,12 @@
 {
-  "name": "specsync-spec-lens",
-  "displayName": "SpecSync SpecLens",
-  "description": "Inline specification annotations for functions",
+  "name": "specsync",
+  "displayName": "SpecSync",
+  "description": "Inline specification annotations, suggestion panel, and Lean proof runner reading from .specsync/",
   "version": "1.0.0",
   "publisher": "specsync",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
   "categories": [
     "Programming Languages",
     "Other"
@@ -11,7 +14,15 @@
   "activationEvents": [
     "onLanguage:javascript",
     "onLanguage:typescript",
-    "onLanguage:python"
+    "onLanguage:typescriptreact",
+    "onLanguage:javascriptreact",
+    "onLanguage:python",
+    "onView:specsync.suggestions",
+    "onCommand:specsync.showSpec",
+    "onCommand:specsync.editSpec",
+    "onCommand:specsync.runProof",
+    "onCommand:specsync.cancelProof",
+    "onCommand:specsync.refreshSpecs"
   ],
   "main": "./out/extension.js",
   "contributes": {
@@ -30,27 +41,71 @@
         "command": "specsync.runProof",
         "title": "Run Lean Proof",
         "category": "SpecSync"
+      },
+      {
+        "command": "specsync.cancelProof",
+        "title": "Cancel Lean Proof",
+        "category": "SpecSync"
+      },
+      {
+        "command": "specsync.addSuggestion",
+        "title": "Add Spec Suggestion",
+        "category": "SpecSync"
+      },
+      {
+        "command": "specsync.refreshSpecs",
+        "title": "Refresh Specs from .specsync/",
+        "category": "SpecSync"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "specsync",
+          "title": "SpecSync",
+          "icon": "resources/specsync.svg"
+        }
+      ]
+    },
+    "views": {
+      "specsync": [
+        {
+          "id": "specsync.suggestions",
+          "name": "Suggestions"
+        }
+      ]
+    },
     "configuration": {
       "title": "SpecSync",
       "properties": {
-        "specsync.specCachePath": {
+        "specsync.specsDir": {
           "type": "string",
-          "default": ".specsync/spec.json",
-          "description": "Path to spec cache file"
+          "default": ".specsync/specs",
+          "description": "Directory of accepted spec JSON files (relative to workspace root)"
         },
         "specsync.leanPath": {
           "type": "string",
           "default": "lean",
-          "description": "Path to Lean executable"
+          "description": "Path to the Lean executable"
         },
         "specsync.confidenceThreshold": {
           "type": "number",
           "default": 0.7,
-          "description": "Minimum confidence for displaying suggestions"
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence (0–1) for displaying CodeLens/hover specs"
         }
       }
     }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "vscode:prepublish": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.7.2"
   }
 }

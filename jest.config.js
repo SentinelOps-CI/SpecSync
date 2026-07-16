@@ -12,7 +12,14 @@ module.exports = {
   },
   roots: ["<rootDir>/test"],
   testMatch: ["**/*.test.ts"],
-  collectCoverageFrom: ["src/**/*.ts", "!src/vscode-ui.ts", "!src/demo.ts", "!src/ui-demo.ts"],
+  // Critical-path coverage. Exclude demo/CLI and unused Phase 4 leftovers not imported by index.
+  collectCoverageFrom: [
+    "src/**/*.ts",
+    "!src/demo.ts",
+    "!src/ui-demo.ts",
+    "!src/ci-integration.ts",
+    "!src/spec-coverage.ts",
+  ],
   coveragePathIgnorePatterns: ["/node_modules/", "/dist/"],
   coverageThreshold: {
     global: {

@@ -20,10 +20,17 @@ describe("DiffParser", () => {
       expect(diffParser.isCodeFile("test/app.js")).toBe(false);
     });
 
-    it("should exclude non-code files", () => {
-      expect(diffParser.isCodeFile("README.md")).toBe(false);
-      expect(diffParser.isCodeFile("package.json")).toBe(false);
-      expect(diffParser.isCodeFile("src/app.css")).toBe(false);
+    it("should exclude languages without tree-sitter parsers", () => {
+      expect(diffParser.isCodeFile("src/main.go")).toBe(false);
+      expect(diffParser.isCodeFile("src/util.c")).toBe(false);
+      expect(diffParser.isCodeFile("src/util.cpp")).toBe(false);
+      expect(diffParser.isCodeFile("include/util.h")).toBe(false);
+    });
+
+    it("should include tree-sitter-backed languages", () => {
+      expect(diffParser.isCodeFile("src/App.tsx")).toBe(true);
+      expect(diffParser.isCodeFile("src/Main.java")).toBe(true);
+      expect(diffParser.isCodeFile("src/lib.rs")).toBe(true);
     });
   });
 
@@ -47,6 +54,98 @@ index 1234567..abcdefg 100644
       expect(functions).toHaveLength(1);
       expect(functions[0].name).toBe("calculateInterest");
       expect(functions[0].changeType).toBe("+");
+      expect(functions[0].lineNumber).toBe(10);
+    });
+
+    it("should map function start to RIGHT-side file line after hunk context", () => {
+      const diff = `@@ -20,3 +20,7 @@
+ context line one
+ context line two
++function addedAfterContext(x) {
++  return x;
++}
+`;
+
+      const functions = diffParser.extractFunctions(diff);
+      expect(functions).toHaveLength(1);
+      expect(functions[0].name).toBe("addedAfterContext");
+      // Hunk starts at right line 20; two context lines → function at 22
+      expect(functions[0].lineNumber).toBe(22);
+    });
+
+    it("should skip removed lines when advancing RIGHT-side line numbers", () => {
+      const diff = `@@ -5,4 +5,4 @@
+-function oldName() {
++function newName() {
+   return 1;
+ }
+`;
+
+      const functions = diffParser.extractFunctions(diff);
+      const added = functions.find((f) => f.name === "newName");
+      expect(added).toBeDefined();
+      expect(added.lineNumber).toBe(5);
+    });
+
+    it("should parse hunk headers", () => {
+      expect(diffParser.parseHunkHeader("@@ -10,6 +12,8 @@")).toEqual({
+        oldStart: 10,
+        oldCount: 6,
+        newStart: 12,
+        newCount: 8,
+      });
+      expect(diffParser.parseHunkHeader("@@ -1 +1 @@")).toEqual({
+        oldStart: 1,
+        oldCount: 1,
+        newStart: 1,
+        newCount: 1,
+      });
+      expect(diffParser.parseHunkHeader("@@ -1,5 +0,0 @@")).toEqual({
+        oldStart: 1,
+        oldCount: 5,
+        newStart: 0,
+        newCount: 0,
+      });
+      expect(diffParser.parseHunkHeader("not a hunk")).toBeNull();
+    });
+
+    it("should anchor pure deletions to LEFT-side old-file lines", () => {
+      const diff = `diff --git a/src/old.js b/src/old.js
+deleted file mode 100644
+index abcdef1..0000000
+--- a/src/old.js
++++ /dev/null
+@@ -8,5 +0,0 @@
+-function doomed() {
+-  return 1;
+-}
+`;
+
+      const functions = diffParser.extractFunctions(diff);
+      expect(functions).toHaveLength(1);
+      expect(functions[0].name).toBe("doomed");
+      expect(functions[0].side).toBe("LEFT");
+      expect(functions[0].lineNumber).toBe(8);
+      expect(functions[0].changeType).toBe("-");
+    });
+
+    it("should use LEFT for removed function lines in mixed hunks", () => {
+      const diff = `@@ -5,4 +5,4 @@
+-function oldName() {
++function newName() {
+   return 1;
+ }
+`;
+
+      const functions = diffParser.extractFunctions(diff);
+      const removed = functions.find((f: { name: string }) => f.name === "oldName");
+      const added = functions.find((f: { name: string }) => f.name === "newName");
+      expect(removed).toBeDefined();
+      expect(removed.side).toBe("LEFT");
+      expect(removed.lineNumber).toBe(5);
+      expect(added).toBeDefined();
+      expect(added.side).toBe("RIGHT");
+      expect(added.lineNumber).toBe(5);
     });
 
     it("should extract arrow functions", () => {
@@ -64,6 +163,7 @@ index 1234567..abcdefg 100644
       const functions = diffParser.extractFunctions(diff);
       expect(functions).toHaveLength(1);
       expect(functions[0].name).toBe("multiply");
+      expect(functions[0].lineNumber).toBe(5);
     });
 
     it("should extract Python function definitions", () => {
@@ -82,6 +182,7 @@ index 1234567..abcdefg 100644
       const functions = diffParser.extractFunctions(diff);
       expect(functions.length).toBeGreaterThan(0);
       expect(functions[0].name).toBe("calculate_area");
+      expect(functions[0].lineNumber).toBe(3);
     });
   });
 

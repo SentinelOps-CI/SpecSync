@@ -109,11 +109,114 @@ describe("LLMClient", () => {
       expect(result).toHaveProperty("edgeCases");
       expect(result).toHaveProperty("confidence");
       expect(result).toHaveProperty("reasoning");
+      expect(result.isMock).toBe(true);
+      expect(result.unavailable).toBeUndefined();
       expect(Array.isArray(result.preconditions)).toBe(true);
       expect(Array.isArray(result.postconditions)).toBe(true);
       expect(Array.isArray(result.invariants)).toBe(true);
       expect(Array.isArray(result.edgeCases)).toBe(true);
       expect(typeof result.confidence).toBe("number");
+    });
+
+    it("should return unavailable in production when mock LLM is denied", async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevAllow = process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      process.env.NODE_ENV = "production";
+      delete process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+
+      jest.resetModules();
+      const { LLMClient: LLMClientFresh } = require("../src/llm-client");
+      const client = new LLMClientFresh();
+
+      const result = await client.generateSpec({
+        functionName: "prodFn",
+        functionBody: "function prodFn() {}",
+        inputTypes: [],
+        conditionalGuards: [],
+        earlyReturns: [],
+        complexity: 1,
+      });
+
+      expect(result.unavailable).toBe(true);
+      expect(result.reason).toBe("llm_unavailable");
+      expect(result.isMock).toBe(false);
+
+      process.env.NODE_ENV = prevNodeEnv;
+      if (prevAllow === undefined) {
+        delete process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      } else {
+        process.env.SPECSYNC_ALLOW_MOCK_LLM = prevAllow;
+      }
+    });
+
+    it("should allow mock in production when SPECSYNC_ALLOW_MOCK_LLM=true", async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevAllow = process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      process.env.NODE_ENV = "production";
+      process.env.SPECSYNC_ALLOW_MOCK_LLM = "true";
+      delete process.env.OPENAI_API_KEY;
+      delete process.env.ANTHROPIC_API_KEY;
+
+      jest.resetModules();
+      const { LLMClient: LLMClientFresh } = require("../src/llm-client");
+      const client = new LLMClientFresh();
+
+      const result = await client.generateSpec({
+        functionName: "allowedMock",
+        functionBody: "function allowedMock() {}",
+        inputTypes: [],
+        conditionalGuards: [],
+        earlyReturns: [],
+        complexity: 1,
+      });
+
+      expect(result.unavailable).toBeUndefined();
+      expect(result.isMock).toBe(true);
+      expect(result).toHaveProperty("preconditions");
+
+      process.env.NODE_ENV = prevNodeEnv;
+      if (prevAllow === undefined) {
+        delete process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      } else {
+        process.env.SPECSYNC_ALLOW_MOCK_LLM = prevAllow;
+      }
+    });
+
+    it("should return unavailable on API failure in production without mock allow", async () => {
+      const prevNodeEnv = process.env.NODE_ENV;
+      const prevAllow = process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      process.env.NODE_ENV = "production";
+      delete process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      process.env.OPENAI_API_KEY = "test-key";
+
+      jest.resetModules();
+      const { LLMClient: LLMClientFresh } = require("../src/llm-client");
+      const client = new LLMClientFresh();
+      client.openai = mockOpenAI;
+      mockOpenAI.chat.completions.create.mockRejectedValue(new Error("API Error"));
+      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
+
+      const result = await client.generateSpec({
+        functionName: "failFn",
+        functionBody: "function failFn() {}",
+        inputTypes: [],
+        conditionalGuards: [],
+        earlyReturns: [],
+        complexity: 1,
+      });
+
+      expect(result.unavailable).toBe(true);
+      expect(result.isMock).toBe(false);
+
+      consoleSpy.mockRestore();
+      process.env.NODE_ENV = prevNodeEnv;
+      if (prevAllow === undefined) {
+        delete process.env.SPECSYNC_ALLOW_MOCK_LLM;
+      } else {
+        process.env.SPECSYNC_ALLOW_MOCK_LLM = prevAllow;
+      }
     });
 
     it("should generate spec with OpenAI when available", async () => {
@@ -135,7 +238,7 @@ describe("LLMClient", () => {
                 postconditions: ["function returns boolean"],
                 invariants: ["no side effects"],
                 edgeCases: ["empty string input"],
-                confidence: 85,
+                confidence: 0.85,
                 reasoning: "Analysis complete",
               }),
             },
@@ -166,7 +269,8 @@ describe("LLMClient", () => {
       expect(mockOpenAI.chat.completions.create).toHaveBeenCalled();
       expect(result.preconditions).toContain("param1 is not null");
       expect(result.postconditions).toContain("function returns boolean");
-      expect(result.confidence).toBe(85);
+      expect(result.confidence).toBe(0.85);
+      expect(result.isMock).toBe(false);
     });
 
     it("should generate spec with Anthropic when OpenAI unavailable", async () => {
@@ -187,7 +291,7 @@ describe("LLMClient", () => {
               postconditions: ["function completes"],
               invariants: ["state consistent"],
               edgeCases: ["null input"],
-              confidence: 90,
+              confidence: 0.9,
               reasoning: "Anthropic analysis",
             }),
           },
@@ -216,7 +320,7 @@ describe("LLMClient", () => {
 
       expect(mockAnthropic.messages.create).toHaveBeenCalled();
       expect(result.preconditions).toContain("param1 is valid");
-      expect(result.confidence).toBe(90);
+      expect(result.confidence).toBe(0.9);
     });
 
     it("should fallback to mock on LLM error", async () => {
@@ -224,7 +328,6 @@ describe("LLMClient", () => {
       llmClient = new LLMClient();
 
       mockOpenAI.chat.completions.create.mockRejectedValue(new Error("API Error"));
-      const consoleSpy = jest.spyOn(console, "error").mockImplementation();
 
       const context = {
         functionName: "testFunction",
@@ -237,11 +340,9 @@ describe("LLMClient", () => {
 
       const result = await llmClient.generateSpec(context);
 
-      expect(consoleSpy).toHaveBeenCalledWith("Error generating spec with LLM:", expect.any(Error));
       expect(result).toHaveProperty("preconditions");
       expect(result).toHaveProperty("postconditions");
-
-      consoleSpy.mockRestore();
+      expect(result.isMock).toBe(true);
     });
   });
 
@@ -256,7 +357,7 @@ describe("LLMClient", () => {
         postconditions: ["output is correct"],
         invariants: ["state maintained"],
         edgeCases: ["edge case 1"],
-        confidence: 85,
+        confidence: 0.85,
         reasoning: "Good analysis",
       });
 
@@ -264,7 +365,21 @@ describe("LLMClient", () => {
 
       expect(result.preconditions).toContain("input is valid");
       expect(result.postconditions).toContain("output is correct");
-      expect(result.confidence).toBe(85);
+      expect(result.confidence).toBe(0.85);
+    });
+
+    it("should normalize legacy 0–100 confidence to 0–1", () => {
+      const response = JSON.stringify({
+        preconditions: ["input is valid"],
+        postconditions: ["output is correct"],
+        invariants: ["state maintained"],
+        edgeCases: ["edge case 1"],
+        confidence: 85,
+        reasoning: "Good analysis",
+      });
+
+      const result = llmClient.parseLLMResponse(response);
+      expect(result.confidence).toBe(0.85);
     });
 
     it("should handle invalid JSON response", () => {
@@ -284,7 +399,7 @@ describe("LLMClient", () => {
       const response = JSON.stringify({
         preconditions: ["test"],
         // Missing other required fields
-        confidence: 50,
+        confidence: 0.5,
       });
 
       const result = llmClient.parseLLMResponse(response);

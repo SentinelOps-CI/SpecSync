@@ -1,9 +1,20 @@
-// @ts-nocheck
 const OpenAI = require("openai");
 const Anthropic = require("@anthropic-ai/sdk");
+const { normalizeConfidence } = require("./types");
+const { incr } = require("./metrics");
+const { logger } = require("./logger");
 require("dotenv").config();
 
+/** Sentinel when production denies mock LLM output. */
+export const LLM_UNAVAILABLE = Object.freeze({
+  unavailable: true,
+  reason: "llm_unavailable",
+  isMock: false,
+});
+
 export class LLMClient {
+  openai: any;
+  anthropic: any;
   constructor() {
     this.openai = null;
     this.anthropic = null;
@@ -43,24 +54,63 @@ export class LLMClient {
   }
 
   /**
+   * Whether a live LLM provider client is configured.
+   * @returns {boolean}
+   */
+  hasLiveClients() {
+    return Boolean(this.openai || this.anthropic);
+  }
+
+  /**
+   * Mock LLM is allowed in non-production, or when SPECSYNC_ALLOW_MOCK_LLM=true.
+   * In production with the flag unset/false, mock specs must not be posted.
+   * @returns {boolean}
+   */
+  isMockLlmAllowed() {
+    if (process.env.SPECSYNC_ALLOW_MOCK_LLM === "true") {
+      return true;
+    }
+    return process.env.NODE_ENV !== "production";
+  }
+
+  /**
    * Generate specification using available LLM
    * @param {Object} context - Function analysis context
-   * @returns {Object} Generated specification
+   * @returns {Object} Generated specification, or unavailable sentinel when mock denied
    */
-  async generateSpec(context) {
+  async generateSpec(context: any) {
     try {
-      // Try OpenAI first, then Anthropic, then fallback to mock
+      // Try OpenAI first, then Anthropic, then fallback to mock (if allowed)
       if (this.openai) {
-        return await this.generateWithOpenAI(context);
+        const result = await this.generateWithOpenAI(context);
+        incr("llm_live");
+        return result;
       } else if (this.anthropic) {
-        return await this.generateWithAnthropic(context);
+        const result = await this.generateWithAnthropic(context);
+        incr("llm_live");
+        return result;
       } else {
-        return this.generateMockSpec(context);
+        return this.mockOrUnavailable(context);
       }
-    } catch (error) {
-      console.error("Error generating spec with LLM:", error);
-      return this.generateMockSpec(context);
+    } catch (error: unknown) {
+      incr("llm_failures");
+      logger.error({ err: error }, "Error generating spec with LLM");
+      return this.mockOrUnavailable(context);
     }
+  }
+
+  /**
+   * Return a mock spec when allowed; otherwise the unavailable sentinel.
+   * @param {Object} context - Function analysis context
+   * @returns {Object}
+   */
+  mockOrUnavailable(context: any) {
+    if (!this.isMockLlmAllowed()) {
+      incr("llm_failures");
+      return { ...LLM_UNAVAILABLE };
+    }
+    incr("llm_mock");
+    return this.generateMockSpec(context);
   }
 
   /**
@@ -68,7 +118,7 @@ export class LLMClient {
    * @param {Object} context - Function analysis context
    * @returns {Object} Generated specification
    */
-  async generateWithOpenAI(context) {
+  async generateWithOpenAI(context: any) {
     const prompt = this.buildPrompt(context);
 
     const response = await this.openai.chat.completions.create({
@@ -97,7 +147,7 @@ export class LLMClient {
    * @param {Object} context - Function analysis context
    * @returns {Object} Generated specification
    */
-  async generateWithAnthropic(context) {
+  async generateWithAnthropic(context: any) {
     const prompt = this.buildPrompt(context);
 
     const response = await this.anthropic.messages.create({
@@ -121,7 +171,7 @@ export class LLMClient {
    * @param {Object} context - Function analysis context
    * @returns {string} Enhanced LLM prompt
    */
-  buildPrompt(context) {
+  buildPrompt(context: any) {
     return `You are an expert software engineer specializing in formal specification and program verification. Analyze the following ${context.language} function and generate a comprehensive formal specification using state-of-the-art techniques.
 
 Function: ${context.functionName}
@@ -184,7 +234,7 @@ Please generate a formal specification using the following advanced analysis fra
    - Memory leak potential
    - API contract compliance
 
-6. CONFIDENCE: Your confidence level (0-100) in this analysis
+6. CONFIDENCE: Your confidence level as a number in [0, 1] (e.g. 0.85)
    - Consider the complexity of the function
    - Consider the clarity of the implementation
    - Consider the presence of comments/documentation
@@ -204,7 +254,7 @@ Respond with ONLY valid JSON in this exact format:
     "vulnerabilities": ["list", "of", "potential", "issues"],
     "mitigations": ["list", "of", "mitigation", "strategies"]
   },
-  "confidence": 85,
+  "confidence": 0.85,
   "reasoning": "detailed explanation of the analysis including key insights and potential concerns"
 }`;
   }
@@ -214,7 +264,7 @@ Respond with ONLY valid JSON in this exact format:
    * @param {string} response - LLM response
    * @returns {Object} Parsed specification
    */
-  parseLLMResponse(response) {
+  parseLLMResponse(response: string) {
     try {
       // Try to extract JSON from the response
       const jsonMatch = response.match(/\{[\s\S]*\}/);
@@ -229,7 +279,7 @@ Respond with ONLY valid JSON in this exact format:
           "edgeCases",
           "confidence",
         ];
-        const missing = required.filter((field) => !parsed[field]);
+        const missing = required.filter((field: any) => !parsed[field]);
 
         if (missing.length === 0) {
           return {
@@ -239,26 +289,28 @@ Respond with ONLY valid JSON in this exact format:
             edgeCases: Array.isArray(parsed.edgeCases) ? parsed.edgeCases : [],
             complexity: parsed.complexity || { time: "O(1)", space: "O(1)" },
             security: parsed.security || { vulnerabilities: [], mitigations: [] },
-            confidence: typeof parsed.confidence === "number" ? parsed.confidence : 50,
+            confidence: normalizeConfidence(parsed.confidence, 0.5),
             reasoning: parsed.reasoning || "Generated by LLM",
+            isMock: false,
           };
         }
       }
 
       throw new Error("Invalid JSON response");
-    } catch (error) {
+    } catch (error: unknown) {
       console.error("Failed to parse LLM response:", error);
       console.log("Raw response:", response);
-      return this.generateMockSpec({});
+      return this.mockOrUnavailable({});
     }
   }
 
   /**
-   * Generate mock specification for testing/fallback
+   * Generate mock specification for testing/fallback.
+   * Always sets isMock: true so callers can badge or gate posting.
    * @param {Object} context - Function analysis context
    * @returns {Object} Mock specification
    */
-  generateMockSpec(context) {
+  generateMockSpec(context: any) {
     const { inputTypes = [], conditionalGuards = [], earlyReturns = [], complexity = 1 } = context;
 
     const preconditions = [];
@@ -317,8 +369,9 @@ Respond with ONLY valid JSON in this exact format:
           "Validate all inputs",
         ],
       },
-      confidence: Math.min(85, 100 - complexity * 5),
+      confidence: normalizeConfidence(Math.min(0.85, 1 - complexity * 0.05)),
       reasoning: `Mock analysis of function with ${inputTypes.length} inputs, ${conditionalGuards.length} conditionals, and complexity ${complexity}. Advanced security and performance analysis included.`,
+      isMock: true,
     };
   }
 
@@ -341,8 +394,8 @@ Respond with ONLY valid JSON in this exact format:
           max_tokens: 10,
         });
         results.openai = true;
-      } catch (error) {
-        console.error("OpenAI test failed:", error.message);
+      } catch (error: unknown) {
+        console.error("OpenAI test failed:", error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error));
       }
     }
 
@@ -354,8 +407,8 @@ Respond with ONLY valid JSON in this exact format:
           messages: [{ role: "user", content: "Hello" }],
         });
         results.anthropic = true;
-      } catch (error) {
-        console.error("Anthropic test failed:", error.message);
+      } catch (error: unknown) {
+        console.error("Anthropic test failed:", error instanceof Error ? (error instanceof Error ? error.message : String(error)) : String(error));
       }
     }
 

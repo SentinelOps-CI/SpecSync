@@ -311,6 +311,18 @@ describe("UIPrinciples", () => {
       expect(uiPrinciples.hasConfidenceField(withoutConfidence)).toBe(false);
     });
 
+    test("should accept reasoning as rationale alias", () => {
+      const withReasoning = {
+        functionName: "test",
+        confidence: 0.8,
+        reasoning: "This is a long enough reasoning string for validation.",
+      };
+      expect(uiPrinciples.hasRationaleField(withReasoning)).toBe(true);
+      expect(uiPrinciples.getRationaleText(withReasoning)).toContain("reasoning string");
+      const validation = uiPrinciples.validateConfidenceTransparency(withReasoning);
+      expect(validation.isValid).toBe(true);
+    });
+
     test("should check rationale field presence", () => {
       const withRationale = { rationale: "Test rationale" };
       const withoutRationale = {};

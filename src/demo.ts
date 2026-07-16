@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 /**
  * SpecSync Demo
@@ -15,8 +14,9 @@ import { LLMClient } from "./llm-client";
 import { Lean4Generator } from "./lean4-generator";
 import { CIIntegration } from "./ci-integration";
 import { SpecCoverageTracker } from "./spec-coverage";
-import { DashboardUI } from "./dashboard-ui";
-import { DeveloperFeedback } from "./developer-feedback";
+import { WebDashboard } from "./web-dashboard";
+import { SlackAlerts } from "./slack-alerts";
+import { UIPrinciples } from "./ui-principles";
 
 async function runDemo() {
   console.log("🚀 Starting SpecSync Demo with Track B Implementation\n");
@@ -29,8 +29,13 @@ async function runDemo() {
   const lean4Generator = new Lean4Generator();
   const ciIntegration = new CIIntegration();
   const coverageTracker = new SpecCoverageTracker();
-  const dashboardUI = new DashboardUI();
-  const developerFeedback = new DeveloperFeedback();
+  const webDashboard = new WebDashboard();
+  const slackAlerts = new SlackAlerts();
+  const uiPrinciples = new UIPrinciples();
+
+  void webDashboard;
+  void slackAlerts;
+  void uiPrinciples;
 
   // Test LLM connectivity
   console.log("🔍 Testing LLM Connectivity...");
@@ -55,7 +60,7 @@ index 1234567..abcdefg 100644
 +  return Math.round(interest * 100) / 100; // Round to 2 decimal places
 +}
 +
- function add(a, b) {
+ function add(a: any, b: any) {
    return a + b;
  }
 @@ -15,6 +24,20 @@ function multiply(a, b) {
@@ -95,13 +100,13 @@ index 1234567..abcdefg 100644
     },
     octokit: {
       repos: {
-        getContent: async ({ path }) => {
+        getContent: async ({ path }: { path: string }) => {
           if (path === "src/calculator.js") {
             return {
               data: {
                 content: Buffer.from(
                   `
-function calculateInterest(principal, rate, time) {
+function calculateInterest(principal: any, rate: any, time: any) {
   // Validate inputs
   if (principal <= 0 || rate < 0 || time <= 0) {
     throw new Error('Invalid parameters: all values must be positive');
@@ -112,19 +117,19 @@ function calculateInterest(principal, rate, time) {
   return Math.round(interest * 100) / 100; // Round to 2 decimal places
 }
 
-function add(a, b) {
+function add(a: any, b: any) {
   return a + b;
 }
 
-function subtract(a, b) {
+function subtract(a: any, b: any) {
   return a - b;
 }
 
-function multiply(a, b) {
+function multiply(a: any, b: any) {
   return a * b;
 }
 
-function validateEmail(email) {
+function validateEmail(email: any) {
   if (!email || typeof email !== 'string') {
     return false;
   }
@@ -149,14 +154,14 @@ function validateEmail(email) {
     console.log("📊 Step 1: Parsing Diff...");
     const functionChanges = await diffParser.parseDiff(sampleDiff, changedFiles);
     console.log(`Found ${functionChanges.length} changed functions:`);
-    functionChanges.forEach((change) => {
+    functionChanges.forEach((change: any) => {
       console.log(`  - ${change.functionName} (${change.changeType})`);
     });
 
     console.log("\n🌳 Step 2: AST Analysis...");
     const astAnalysis = await astExtractor.extractAST(functionChanges, mockContext);
     console.log(`AST analysis completed for ${astAnalysis.length} functions:`);
-    astAnalysis.forEach((analysis) => {
+    astAnalysis.forEach((analysis: any) => {
       console.log(
         `  - ${analysis.functionName}: ${analysis.ast.inputTypes.length} inputs, complexity ${analysis.ast.complexity}`
       );
@@ -166,7 +171,7 @@ function validateEmail(email) {
     const specSuggestions = await specAnalyzer.analyzeChanges(astAnalysis, mockContext);
     console.log(`Generated ${specSuggestions.length} spec suggestions:`);
 
-    specSuggestions.forEach((spec) => {
+    specSuggestions.forEach((spec: any) => {
       console.log(`\n📋 ${spec.functionName}:`);
       console.log(`  Confidence: ${spec.confidence}%`);
       console.log(`  Preconditions: ${spec.preconditions.length}`);
@@ -208,7 +213,7 @@ function validateEmail(email) {
     }
 
     console.log("\n💬 Step 5: GitHub Comment Formatting...");
-    specSuggestions.forEach((spec) => {
+    specSuggestions.forEach((spec: any) => {
       const commentBody = formatSpecComment(spec);
       console.log(`\n📝 Comment for ${spec.functionName}:`);
       console.log(`  Length: ${commentBody.length} characters`);
@@ -231,33 +236,23 @@ function validateEmail(email) {
     );
     console.log(`  Failed Proofs: ${coverageReport.summary.failedProofs}`);
 
-    console.log("\n📟 Step 8: Dashboard UI Generation...");
-    const dashboardHTML = dashboardUI.generateHTMLDashboard({
-      coverage: { coveredFunctions: 15, totalFunctions: 20, coveragePercentage: 75 },
-      proofs: { valid: 12, failed: 3, stale: 2 },
-      drift: { detected: 1, resolved: 0, pending: 1 },
-      recommendations: [
-        {
-          type: "coverage",
-          priority: "medium",
-          message: "Add specs for uncovered functions",
-          action: "Review uncovered functions",
-        },
-        {
-          type: "proofs",
-          priority: "high",
-          message: "3 proofs are failing",
-          action: "Fix failing proofs",
-        },
-      ],
-    });
-    console.log(`  Generated HTML dashboard (${dashboardHTML.length} characters)`);
+    console.log("\n📟 Step 8: Dashboard (WebDashboard, gated by SPECSYNC_DASHBOARD=1)...");
+    console.log(
+      `  Dashboard module loaded; start() is a no-op unless SPECSYNC_DASHBOARD=1 and secret set`
+    );
+    console.log(`  Port default: ${process.env.DASHBOARD_PORT || 3001}`);
 
-    console.log("\n🔁 Step 9: Developer Feedback Loop...");
-    await developerFeedback.notifySpecSuggestion(specSuggestions[0], mockContext);
-    const vscodeExtension = await developerFeedback.generateVSCodeExtension();
-    console.log(`  Generated VSCode extension: ${vscodeExtension}`);
-    console.log(`  Slack notifications: ${developerFeedback.getNotificationStats().queued} queued`);
+    console.log("\n🔁 Step 9: Confidence transparency + Slack alerts...");
+    const sampleSuggestion = specSuggestions[0];
+    if (sampleSuggestion) {
+      const validation = uiPrinciples.validateConfidenceTransparency(sampleSuggestion);
+      console.log(
+        `  Confidence validation: ${validation.isValid ? "ok" : "fail"} ` +
+          `(confidence=${validation.confidenceValue})`
+      );
+    }
+    slackAlerts.initialize();
+    console.log(`  Slack alerts initialized (optional SLACK_BOT_TOKEN)`);
 
     console.log("\n✅ All Tracks Implementation Complete!");
     console.log("\n🎯 Complete SpecSync Implementation:");
@@ -266,8 +261,8 @@ function validateEmail(email) {
     console.log("  ✅ Track C — Autoformalization Engine (Enhanced Lean4)");
     console.log("  ✅ Track D — CI Integration & Proof Validation");
     console.log("  ✅ Track E — Spec Coverage & Drift Detection");
-    console.log("  ✅ Track F — Dashboard UI (React/Next.js ready)");
-    console.log("  ✅ Track G — Developer Feedback Loop (Slack + VSCode)");
+    console.log("  ✅ Track F — WebDashboard (.specsync data, secret auth)");
+    console.log("  ✅ Track G — Slack alerts + confidence transparency");
 
     console.log("\n🚀 Production Ready Features:");
     console.log("  📊 Real-time spec coverage tracking");
@@ -284,13 +279,13 @@ function validateEmail(email) {
     console.log("  3. Install the VSCode extension for developers");
     console.log("  4. Configure Slack workspace for notifications");
     console.log("  5. Set up monitoring and alerting");
-  } catch (error) {
+  } catch (error: unknown) {
     console.error("❌ Demo failed:", error);
   }
 }
 
 // Helper function to format spec comments (from index.js)
-function formatSpecComment(suggestion) {
+function formatSpecComment(suggestion: any) {
   const {
     functionName,
     filePath,
@@ -309,16 +304,16 @@ function formatSpecComment(suggestion) {
 **Confidence:** ${confidence}%
 
 ### 📋 Preconditions
-${preconditions.map((pre) => `- ${pre}`).join("\n")}
+${preconditions.map((pre: any) => `- ${pre}`).join("\n")}
 
 ### ✅ Postconditions
-${postconditions.map((post) => `- ${post}`).join("\n")}
+${postconditions.map((post: any) => `- ${post}`).join("\n")}
 
 ### 🔒 Invariants
-${invariants.map((inv) => `- ${inv}`).join("\n")}
+${invariants.map((inv: any) => `- ${inv}`).join("\n")}
 
 ### ⚠️ Edge Cases
-${edgeCases.map((edge) => `- ${edge}`).join("\n")}
+${edgeCases.map((edge: any) => `- ${edge}`).join("\n")}
 
 ### 💭 Reasoning
 ${reasoning}

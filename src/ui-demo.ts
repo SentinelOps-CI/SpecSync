@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 
 /**
  * SpecSync UI Framework Demo
@@ -9,10 +8,10 @@
  */
 
 import { GitHubUI } from "./github-ui";
-import { VSCodeUI } from "./vscode-ui";
 import { WebDashboard } from "./web-dashboard";
 import { SlackAlerts } from "./slack-alerts";
 import { UIPrinciples } from "./ui-principles";
+import * as path from "path";
 
 async function runUIDemo() {
   console.log("🎨 SpecSync UI Framework Demo\n");
@@ -20,7 +19,6 @@ async function runUIDemo() {
 
   // Initialize all UI components
   const githubUI = new GitHubUI();
-  const vscodeUI = new VSCodeUI();
   const webDashboard = new WebDashboard();
   const slackAlerts = new SlackAlerts();
   const uiPrinciples = new UIPrinciples();
@@ -63,7 +61,7 @@ async function runUIDemo() {
 
   // Demo each component
   await demoGitHubUI(githubUI);
-  await demoVSCodeUI(vscodeUI);
+  await demoVSCodeUI();
   await demoWebDashboard(webDashboard);
   await demoSlackAlerts(slackAlerts);
   await demoUIPrinciples(uiPrinciples);
@@ -77,7 +75,7 @@ async function runUIDemo() {
   console.log("  • Comprehensive error handling and validation");
 }
 
-async function demoGitHubUI(githubUI) {
+async function demoGitHubUI(githubUI: any) {
   console.log("\n🔗 Demo: GitHub PR UI Components");
   console.log("=====================================");
 
@@ -95,19 +93,19 @@ async function demoGitHubUI(githubUI) {
     },
     octokit: {
       pulls: {
-        createReviewComment: async (params) => {
+        createReviewComment: async (params: any) => {
           console.log(`  📝 Created review comment for ${params.path}:${params.line}`);
           return { id: 1 };
         },
       },
       checks: {
-        create: async (params) => {
+        create: async (params: any) => {
           console.log(`  ✅ Created coverage check: ${params.output.title}`);
           return { id: 1 };
         },
       },
       issues: {
-        createComment: async (params) => {
+        createComment: async (params: any) => {
           console.log(`  💬 Created proof check comment`);
           return { id: 1 };
         },
@@ -184,7 +182,7 @@ async function demoGitHubUI(githubUI) {
   console.log(`    Actions: Prove Now | View Dashboard | Export Report`);
 }
 
-async function demoVSCodeUI(vscodeUI) {
+async function demoVSCodeUI() {
   console.log("\n💻 Demo: VSCode Plugin Components");
   console.log("====================================");
 
@@ -209,12 +207,12 @@ async function demoVSCodeUI(vscodeUI) {
   console.log("    • Success/fail notifications");
   console.log("    • Artifact generation and storage");
 
-  // Generate VSCode extension
-  const extensionPath = await vscodeUI.generateVSCodeExtension();
-  console.log(`\n  📦 Generated VSCode extension at: ${extensionPath}`);
+  // Hand-maintained extension (src/vscode-ui.ts generator removed in Phase 8)
+  const extensionPath = path.resolve("./vscode-extension");
+  console.log(`\n  📦 VS Code extension (hand-maintained): ${extensionPath}`);
 }
 
-async function demoWebDashboard(webDashboard) {
+async function demoWebDashboard(webDashboard: any) {
   console.log("\n🌐 Demo: Web Dashboard Components");
   console.log("====================================");
 
@@ -246,13 +244,15 @@ async function demoWebDashboard(webDashboard) {
   console.log("    • Download proof artifacts");
   console.log("    • Compliance-friendly metadata");
 
-  // Start dashboard
-  console.log("\n  🚀 Starting dashboard server...");
-  // webDashboard.start(); // Uncomment to actually start server
-  console.log("    Dashboard would be available at: http://localhost:3001");
+  // Start dashboard only when explicitly enabled (demo leaves it off)
+  console.log("\n  🚀 Dashboard start gate...");
+  console.log("    Set SPECSYNC_DASHBOARD=1 and SPECSYNC_DASHBOARD_SECRET to listen");
+  console.log(`    Current: SPECSYNC_DASHBOARD=${process.env.SPECSYNC_DASHBOARD || "0"}`);
+  webDashboard.start();
+  console.log("    (start() is a no-op without flag + secret)");
 }
 
-async function demoSlackAlerts(slackAlerts) {
+async function demoSlackAlerts(slackAlerts: any) {
   console.log("\n💬 Demo: Slack Alert Components");
   console.log("==================================");
 
@@ -299,7 +299,7 @@ async function demoSlackAlerts(slackAlerts) {
   );
 }
 
-async function demoUIPrinciples(uiPrinciples) {
+async function demoUIPrinciples(uiPrinciples: any) {
   console.log("\n🎯 Demo: UI Design Principles");
   console.log("================================");
 

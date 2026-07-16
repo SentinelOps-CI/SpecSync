@@ -1,9 +1,9 @@
-// @ts-nocheck
 const fs = require("fs-extra");
 const path = require("path");
 const simpleGit = require("simple-git");
 
 export class DiffParser {
+  git: any;
   constructor() {
     this.git = simpleGit();
   }
@@ -14,8 +14,8 @@ export class DiffParser {
    * @param {Array} changedFiles - List of changed files from GitHub API
    * @returns {Array} Array of function changes with metadata
    */
-  async parseDiff(diff, changedFiles) {
-    const functionChanges = [];
+  async parseDiff(diff: string, changedFiles: any[]) {
+    const functionChanges: any[] = [];
 
     for (const file of changedFiles) {
       if (this.isCodeFile(file.filename)) {
@@ -28,31 +28,16 @@ export class DiffParser {
   }
 
   /**
-   * Check if file is a code file that should be analyzed
+   * Check if file is a code file that should be analyzed.
+   * Only tree-sitter-backed languages (JS/TS/Python/Java/Rust) are analyzed.
    * @param {string} filename - File path
    * @returns {boolean}
    */
-  isCodeFile(filename) {
-    const codeExtensions = [
-      ".js",
-      ".ts",
-      ".jsx",
-      ".tsx",
-      ".py",
-      ".java",
-      ".go",
-      ".rs",
-      ".cpp",
-      ".c",
-      ".h",
-    ];
+  isCodeFile(filename: string) {
+    const { isSupportedAstPath } = require("./ast-extractor");
     const testPatterns = ["test", "spec", "Test", "Spec"];
-
-    const ext = path.extname(filename);
-    const isCodeFile = codeExtensions.includes(ext);
-    const isTestFile = testPatterns.some((pattern) => filename.includes(pattern));
-
-    return isCodeFile && !isTestFile;
+    const isTestFile = testPatterns.some((pattern: any) => filename.includes(pattern));
+    return isSupportedAstPath(filename) && !isTestFile;
   }
 
   /**
@@ -61,8 +46,8 @@ export class DiffParser {
    * @param {string} diff - Raw diff content
    * @returns {Array} Function changes in this file
    */
-  async parseFileDiff(file, diff) {
-    const functionChanges = [];
+  async parseFileDiff(file: any, diff: string) {
+    const functionChanges: any[] = [];
     const fileDiff = this.extractFileDiff(diff, file.filename);
 
     if (!fileDiff) return functionChanges;
@@ -71,12 +56,15 @@ export class DiffParser {
     const functions = this.extractFunctions(fileDiff);
 
     for (const func of functions) {
+      const changeType = this.determineChangeType(func);
       const change = {
         filePath: file.filename,
         functionName: func.name,
         functionBody: func.body,
         lineNumber: func.lineNumber,
-        changeType: this.determineChangeType(func),
+        // Pure deletions must use LEFT; GitHub rejects RIGHT lines that do not exist on head.
+        side: func.side || (changeType === "removed" ? "LEFT" : "RIGHT"),
+        changeType,
         comments: this.extractComments(fileDiff, func.lineNumber),
         testFiles: await this.findTestFiles(file.filename),
       };
@@ -93,7 +81,7 @@ export class DiffParser {
    * @param {string} filename - Target filename
    * @returns {string} File-specific diff
    */
-  extractFileDiff(diff, filename) {
+  extractFileDiff(diff: string, filename: string) {
     const lines = diff.split("\n");
     let inTargetFile = false;
     let fileDiff = [];
@@ -113,71 +101,147 @@ export class DiffParser {
   }
 
   /**
-   * Extract function definitions from diff
+   * Parse a unified-diff hunk header into old/new start line numbers and counts.
+   * @param {string} line - Hunk header line (e.g. @@ -10,6 +12,8 @@ or @@ -1,5 +0,0 @@)
+   * @returns {{ oldStart: number, oldCount: number, newStart: number, newCount: number } | null}
+   */
+  parseHunkHeader(line: string) {
+    const match = line.match(/^@@\s+-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?\s+@@/);
+    if (!match) {
+      return null;
+    }
+    return {
+      oldStart: parseInt(match[1], 10),
+      oldCount: match[2] !== undefined ? parseInt(match[2], 10) : 1,
+      newStart: parseInt(match[3], 10),
+      newCount: match[4] !== undefined ? parseInt(match[4], 10) : 1,
+    };
+  }
+
+  /**
+   * Extract function definitions from diff.
+   * Maps each function start to a GitHub-valid file line + side:
+   * - RIGHT + new-file line for adds/modifies/context
+   * - LEFT + old-file line for pure deletions (no head line exists)
    * @param {string} fileDiff - File-specific diff
    * @returns {Array} Array of function objects
    */
-  extractFunctions(fileDiff) {
-    const functions = [];
+  extractFunctions(fileDiff: string) {
+    const functions: any[] = [];
     const lines = fileDiff.split("\n");
 
-    // Common function patterns for different languages
     const functionPatterns = [
-      // JavaScript/TypeScript
       /^(\+|\-)?\s*(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/,
       /^(\+|\-)?\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(/,
       /^(\+|\-)?\s*(?:export\s+)?(\w+)\s*[:=]\s*(?:async\s+)?\(/,
-      // Python
       /^(\+|\-)?\s*def\s+(\w+)\s*\(/,
-      // Java
       /^(\+|\-)?\s*(?:public|private|protected)?\s*(?:static\s+)?(?:final\s+)?(?:<[^>]+>\s+)?\w+\s+(\w+)\s*\(/,
-      // Go
       /^(\+|\-)?\s*func\s+(\w+)\s*\(/,
-      // Rust
       /^(\+|\-)?\s*fn\s+(\w+)\s*\(/,
-      // C/C++
       /^(\+|\-)?\s*(?:static\s+)?(?:inline\s+)?(?:const\s+)?\w+(?:\s*\*)?\s+(\w+)\s*\(/,
     ];
 
-    let currentFunction = null;
+    let currentFunction: any = null;
     let braceCount = 0;
     let inFunction = false;
+    let rightLine = 0;
+    let leftLine = 0;
+    let inHunk = false;
+    /** True when the current hunk has zero new-file lines (pure deletion / deleted file). */
+    let hunkIsPureDeletion = false;
 
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
+    const pushCurrent = () => {
+      if (currentFunction) {
+        functions.push(currentFunction);
+      }
+      currentFunction = null;
+      inFunction = false;
+      braceCount = 0;
+    };
 
-      // Check for function start
+    for (const line of lines) {
+      const hunk = this.parseHunkHeader(line);
+      if (hunk) {
+        rightLine = hunk.newStart;
+        leftLine = hunk.oldStart;
+        inHunk = true;
+        hunkIsPureDeletion = hunk.newCount === 0;
+        continue;
+      }
+
+      if (
+        line.startsWith("diff --git") ||
+        line.startsWith("index ") ||
+        line.startsWith("--- ") ||
+        line.startsWith("+++ ") ||
+        line.startsWith("new file") ||
+        line.startsWith("deleted file") ||
+        line.startsWith("similarity index") ||
+        line.startsWith("rename ") ||
+        line.startsWith("Binary files") ||
+        line.startsWith("\\")
+      ) {
+        continue;
+      }
+
+      if (!inHunk) {
+        continue;
+      }
+
+      const prefix = line[0];
+      const isAdded = prefix === "+";
+      const isRemoved = prefix === "-";
+      const isContext = !isAdded && !isRemoved;
+
+      const currentRightLine = isRemoved ? null : rightLine > 0 ? rightLine : null;
+      const currentLeftLine = isAdded ? null : leftLine > 0 ? leftLine : null;
+
+      let startedFunction = false;
       for (const pattern of functionPatterns) {
         const match = line.match(pattern);
         if (match) {
           if (currentFunction) {
-            functions.push(currentFunction);
+            pushCurrent();
           }
+
+          const useLeft =
+            isRemoved || hunkIsPureDeletion || (currentRightLine == null && currentLeftLine != null);
 
           currentFunction = {
             name: match[2],
             body: line,
-            lineNumber: i + 1,
+            lineNumber: useLeft
+              ? (currentLeftLine ?? currentRightLine ?? 0)
+              : (currentRightLine ?? currentLeftLine ?? 0),
+            side: useLeft ? "LEFT" : "RIGHT",
             changeType: match[1] || "modified",
           };
-
           inFunction = true;
           braceCount = this.countBraces(line);
+          startedFunction = true;
           break;
         }
       }
 
-      // Continue building function body
-      if (inFunction && currentFunction) {
+      if (inFunction && currentFunction && !startedFunction) {
         currentFunction.body += "\n" + line;
         braceCount += this.countBraces(line);
 
-        // Check if function ends
         if (braceCount === 0 && line.trim() !== "") {
-          inFunction = false;
-          functions.push(currentFunction);
-          currentFunction = null;
+          pushCurrent();
         }
+      } else if (startedFunction && braceCount === 0 && line.includes("{")) {
+        // Single-line braced function already complete
+        pushCurrent();
+      }
+
+      if (isRemoved) {
+        leftLine += 1;
+      } else if (isAdded) {
+        rightLine += 1;
+      } else if (isContext) {
+        leftLine += 1;
+        rightLine += 1;
       }
     }
 
@@ -193,7 +257,7 @@ export class DiffParser {
    * @param {string} line - Code line
    * @returns {number} Net brace count
    */
-  countBraces(line) {
+  countBraces(line: string) {
     const openBraces = (line.match(/\{/g) || []).length;
     const closeBraces = (line.match(/\}/g) || []).length;
     return openBraces - closeBraces;
@@ -204,10 +268,10 @@ export class DiffParser {
    * @param {Object} func - Function object
    * @returns {string} Change type
    */
-  determineChangeType(func) {
+  determineChangeType(func: any) {
     const lines = func.body.split("\n");
-    const hasAdded = lines.some((line) => line.startsWith("+"));
-    const hasRemoved = lines.some((line) => line.startsWith("-"));
+    const hasAdded = lines.some((line: any) => line.startsWith("+"));
+    const hasRemoved = lines.some((line: any) => line.startsWith("-"));
 
     if (hasAdded && hasRemoved) {
       return "modified";
@@ -226,7 +290,7 @@ export class DiffParser {
    * @param {number} functionLine - Line number of function
    * @returns {Array} Array of comments
    */
-  extractComments(fileDiff, functionLine) {
+  extractComments(fileDiff: string, functionLine: number) {
     const comments = [];
     const lines = fileDiff.split("\n");
 
@@ -261,7 +325,7 @@ export class DiffParser {
    * @param {string} comment - Comment text
    * @returns {string} Comment type
    */
-  getCommentType(comment) {
+  getCommentType(comment: string) {
     if (comment.includes("TODO") || comment.includes("FIXME")) {
       return "todo";
     } else if (comment.includes("@param") || comment.includes("@return")) {
@@ -278,7 +342,7 @@ export class DiffParser {
    * @param {string} filePath - Path to the source file
    * @returns {Array} Array of test file paths
    */
-  async findTestFiles(filePath) {
+  async findTestFiles(filePath: string) {
     const testFiles = [];
     const dir = path.dirname(filePath);
     const baseName = path.basename(filePath, path.extname(filePath));
@@ -302,7 +366,7 @@ export class DiffParser {
       try {
         await fs.access(testPath);
         testFiles.push(testPath);
-      } catch (error) {
+      } catch (error: unknown) {
         // File doesn't exist, continue
       }
     }
