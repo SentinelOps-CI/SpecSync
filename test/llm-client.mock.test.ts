@@ -1,6 +1,6 @@
 import { LLMClient } from "../src/llm-client";
 
-describe("LLM Integration", () => {
+describe("LLMClient mock path", () => {
   let llmClient;
 
   beforeEach(() => {
@@ -58,9 +58,9 @@ function calculateInterest(principal, rate, time) {
       expect(typeof result.confidence).toBe("number");
       expect(typeof result.reasoning).toBe("string");
 
-      // Verify confidence is in valid range
+      // Verify confidence is in valid 0–1 range
       expect(result.confidence).toBeGreaterThanOrEqual(0);
-      expect(result.confidence).toBeLessThanOrEqual(100);
+      expect(result.confidence).toBeLessThanOrEqual(1);
 
       // Verify we have some content
       expect(result.preconditions.length).toBeGreaterThan(0);
@@ -94,7 +94,7 @@ function validateEmail(email) {
       expect(result.preconditions.length).toBeGreaterThan(0);
       expect(result.postconditions.length).toBeGreaterThan(0);
       expect(result.edgeCases.length).toBeGreaterThan(0);
-      expect(result.confidence).toBeGreaterThan(50);
+      expect(result.confidence).toBeGreaterThan(0.5);
     });
   });
 
@@ -134,7 +134,7 @@ function validateEmail(email) {
         postconditions: ["output is correct"],
         invariants: ["state maintained"],
         edgeCases: ["edge case 1"],
-        confidence: 85,
+        confidence: 0.85,
         reasoning: "Good analysis",
       });
 
@@ -142,7 +142,7 @@ function validateEmail(email) {
 
       expect(result.preconditions).toContain("input is valid");
       expect(result.postconditions).toContain("output is correct");
-      expect(result.confidence).toBe(85);
+      expect(result.confidence).toBe(0.85);
       expect(result.reasoning).toBe("Good analysis");
     });
 
