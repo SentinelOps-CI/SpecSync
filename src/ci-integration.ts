@@ -1,9 +1,11 @@
-// @ts-nocheck
-const { exec } = require("child_process");
+const { execFile } = require("child_process");
 const fs = require("fs-extra");
 const path = require("path");
 
 export class CIIntegration {
+  leanPath: any;
+  specsDir: any;
+  coverageThreshold: any;
   constructor() {
     this.leanPath = process.env.LEAN_PATH || "lean";
     this.specsDir = process.env.SPECS_DIR || "./specs";
@@ -15,12 +17,12 @@ export class CIIntegration {
    * @param {Array} specFiles - Array of spec file paths
    * @returns {Object} Compilation results
    */
-  async runLeanCompilation(specFiles) {
+  async runLeanCompilation(specFiles: any[]) {
     const results = {
       success: true,
-      compiled: [],
-      failed: [],
-      errors: [],
+      compiled: [] as string[],
+      failed: [] as string[],
+      errors: [] as string[],
       coverage: 0,
     };
 
@@ -31,11 +33,11 @@ export class CIIntegration {
           results.compiled.push(specFile);
         } else {
           results.failed.push(specFile);
-          results.errors.push(result.error);
+          results.errors.push(result.error ?? "Lean compilation failed");
         }
-      } catch (error) {
+      } catch (error: unknown) {
         results.failed.push(specFile);
-        results.errors.push(error.message);
+        results.errors.push((error instanceof Error ? error.message : String(error)));
       }
     }
 
@@ -51,15 +53,13 @@ export class CIIntegration {
    * @param {string} specFile - Path to spec file
    * @returns {Object} Compilation result
    */
-  async compileLeanFile(specFile) {
+  async compileLeanFile(specFile: string): Promise<{ success: boolean; error?: string; stdout?: string; stderr?: string }> {
     return new Promise((resolve) => {
-      const command = `${this.leanPath} --json ${specFile}`;
-
-      exec(command, { timeout: 30000 }, (error, stdout, stderr) => {
+      execFile(this.leanPath, ["--json", specFile], { timeout: 30000 }, (error: Error | null, stdout: string, stderr: string) => {
         if (error) {
           resolve({
             success: false,
-            error: error.message,
+            error: (error instanceof Error ? error.message : String(error)),
             stderr: stderr,
           });
         } else {
@@ -78,30 +78,30 @@ export class CIIntegration {
    * @param {Array} failed - Failed compilation files
    * @returns {number} Coverage percentage
    */
-  calculateCoverage(compiled, failed) {
+  calculateCoverage(compiled: any[], failed: any[]) {
     const total = compiled.length + failed.length;
     if (total === 0) return 0;
     return Math.round((compiled.length / total) * 100);
   }
 
   /**
-   * Generate Sigstore signature for successful proofs
+   * Generate content digests for compiled proof artifacts (not Sigstore).
    * @param {Array} compiledFiles - Successfully compiled files
-   * @returns {Object} Signature results
+   * @returns {Object} Digest results
    */
-  async generateProofSignature(compiledFiles) {
+  async generateProofSignature(compiledFiles: any[]) {
     const signatures = [];
 
     for (const file of compiledFiles) {
       try {
-        const signature = await this.signFile(file);
+        const digest = await this.contentDigest(file);
         signatures.push({
           file,
-          signature: signature,
+          contentDigest: digest,
           timestamp: new Date().toISOString(),
         });
-      } catch (error) {
-        console.error(`Failed to sign ${file}:`, error);
+      } catch (error: unknown) {
+        console.error(`Failed to digest ${file}:`, error);
       }
     }
 
@@ -112,20 +112,25 @@ export class CIIntegration {
   }
 
   /**
-   * Sign a file using Sigstore (placeholder implementation)
-   * @param {string} filePath - File to sign
-   * @returns {string} Signature
+   * Content digest (SHA-256). Not Sigstore/cosign — do not claim cryptographic signing.
+   * @param {string} filePath - File to digest
+   * @returns {string} contentDigest:<hex>
    */
-  async signFile(filePath) {
-    // In a real implementation, this would use Sigstore
-    // For now, we'll create a simple hash-based signature
+  async contentDigest(filePath: string) {
     const fs = require("fs");
     const crypto = require("crypto");
 
     const content = fs.readFileSync(filePath, "utf8");
     const hash = crypto.createHash("sha256").update(content).digest("hex");
 
-    return `sigstore:${hash}`;
+    return `contentDigest:${hash}`;
+  }
+
+  /**
+   * @deprecated Use contentDigest. Does not perform Sigstore signing.
+   */
+  async signFile(filePath: any) {
+    return this.contentDigest(filePath);
   }
 
   /**
@@ -134,12 +139,12 @@ export class CIIntegration {
    * @param {Array} criticalFunctions - List of critical functions
    * @returns {Object} Gating results
    */
-  checkProofGating(compilationResults, criticalFunctions = []) {
+  checkProofGating(compilationResults: any, criticalFunctions: any[]= []) {
     const results = {
       canMerge: true,
-      reasons: [],
-      criticalFailures: [],
-      coverageFailures: [],
+      reasons: [] as string[],
+      criticalFailures: [] as string[],
+      coverageFailures: [] as string[],
     };
 
     // Check coverage threshold
@@ -152,7 +157,7 @@ export class CIIntegration {
 
     // Check critical function proofs
     for (const criticalFunc of criticalFunctions) {
-      const hasProof = compilationResults.compiled.some((file) => file.includes(criticalFunc));
+      const hasProof = compilationResults.compiled.some((file: any) => file.includes(criticalFunc));
 
       if (!hasProof) {
         results.canMerge = false;
@@ -176,7 +181,7 @@ export class CIIntegration {
    * @param {string} outputPath - Output path for workflow file
    * @returns {string} Workflow content
    */
-  generateGitHubActionsWorkflow(outputPath = ".github/workflows/lean4-ci.yml") {
+  generateGitHubActionsWorkflow(outputPath: string= ".github/workflows/lean4-ci.yml") {
     const workflow = `name: Lean4 Proof Validation
 
 on:
@@ -254,7 +259,7 @@ jobs:
               const { execSync } = require('child_process');
               execSync(\`lean --json \${path.join(specsDir, file)}\`, { stdio: 'pipe' });
               successCount++;
-            } catch (error) {
+            } catch (error: unknown) {
               console.log(\`Proof failed: \${file}\`);
             }
           }
@@ -320,7 +325,7 @@ jobs:
    * @param {Array} signatures - Proof signatures
    * @returns {Object} Status report
    */
-  createProofStatusReport(compilationResults, signatures) {
+  createProofStatusReport(compilationResults: any, signatures: any[]) {
     return {
       timestamp: new Date().toISOString(),
       coverage: compilationResults.coverage,
@@ -338,7 +343,7 @@ jobs:
    * @param {Object} context - GitHub context
    * @param {Object} report - Proof status report
    */
-  async postProofResults(context, report) {
+  async postProofResults(context: any, report: any) {
     const { payload } = context;
     const { repository } = payload;
 
@@ -354,7 +359,7 @@ ${
   report.errors.length > 0
     ? `
 ### ❌ Failed Proofs
-${report.errors.map((error) => `- ${error}`).join("\n")}
+${report.errors.map((error: any) => `- ${error}`).join("\n")}
 `
     : ""
 }
